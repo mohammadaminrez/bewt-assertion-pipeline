@@ -127,6 +127,7 @@ def run_experiment(
                         if html:
                             system, user = build_prompt_c(record, variant_source, html)
                         else:
+                            _progress(t, record.class_name, "no_html")
                             system, user = build_prompt_b(record, variant_source)
                     else:
                         continue

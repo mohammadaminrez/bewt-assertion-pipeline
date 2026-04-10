@@ -183,6 +183,13 @@ def capture_html(ctx, app):
 
     docker = DockerManager(config)
 
+    # Check requirements upfront
+    warnings = _validate_execution_tools()
+    for w in warnings:
+        click.echo(click.style(f"Warning: {w}", fg="yellow"))
+    if warnings and not click.confirm("Continue anyway?"):
+        return
+
     for app_name in apps:
         click.echo(f"\n=== Capturing HTML for {app_name} ===")
         if not docker.deploy_app(app_name):
@@ -225,6 +232,8 @@ def run(ctx, app, model, treatment, execute):
             click.echo(f"\n--- {message[4:]} ---")
         elif message.startswith("skip:"):
             click.echo(click.style(f"  {message[5:]}: test dir not found, skipping", fg="red"))
+        elif message == "no_html":
+            click.echo(f"  {progress} [{t}] {class_name}: " + click.style("no HTML captured, falling back to B", fg="yellow"))
         elif message == "skipped":
             click.echo(f"  {progress} [{t}] {class_name}: already done, skipping")
         elif message == "invalid":

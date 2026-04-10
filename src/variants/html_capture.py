@@ -2,8 +2,8 @@ from __future__ import annotations
 
 """Capture HTML pages from running web applications for variant C."""
 
-import subprocess
 import shutil
+import subprocess
 from pathlib import Path
 from ..config import Config
 
@@ -38,6 +38,12 @@ def capture_html_for_app(
     _inject_capture_hook(instrumented_path, capture_dir)
 
     # Run tests to capture HTML
+    if not shutil.which("mvn"):
+        raise RuntimeError(
+            "Maven (mvn) is required for HTML capture but was not found.\n"
+            "  Install Maven: https://maven.apache.org/install.html"
+        )
+
     result = subprocess.run(
         ["mvn", "test", "-Dtest=TestSuite", "-pl", "."],
         cwd=str(instrumented_path),
