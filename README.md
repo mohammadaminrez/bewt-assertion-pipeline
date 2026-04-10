@@ -5,9 +5,10 @@ Evaluates how well LLMs generate Selenium test assertions under three context le
 ## Quick Start
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 cp .env.example .env          # add your OPENAI_API_KEY / ANTHROPIC_API_KEY
-bewt-pipeline run --app expresscart --model gpt-4o --treatment A B
+bewt-pipeline run --app expresscart --model gpt-4o --treatment A --treatment B
 bewt-pipeline report
 ```
 

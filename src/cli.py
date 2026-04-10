@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import click
 
