@@ -3,6 +3,8 @@ from __future__ import annotations
 """CLI entry point for the BEWT assertion generation pipeline."""
 
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
@@ -30,6 +32,65 @@ from .evaluation.reporter import generate_full_report
 from .data.store import ResultStore
 
 
+def _validate_bewt_repo(config: Config) -> None:
+    """Check that the BEWT repo exists. Fail loudly if not."""
+    if not config.bewt_repo_path.exists():
+        raise click.ClickException(
+            f"BEWT repo not found at: {config.bewt_repo_path}\n"
+            f"  Clone it with: git clone https://github.com/nicorubi/BEWT.git {config.bewt_repo_path}\n"
+            f"  Or update bewt_repo_path in config/apps.yaml"
+        )
+
+
+def _validate_api_keys(config: Config, model_names: list[str]) -> None:
+    """Check that required API keys are set. Fail loudly if not."""
+    missing = []
+    for model_name in model_names:
+        model_config = config.models[model_name]
+        env_var = model_config["api_key_env"]
+        if not os.environ.get(env_var):
+            missing.append(f"  {model_name} ({model_config['provider']}): set {env_var}")
+    if missing:
+        raise click.ClickException(
+            "Missing API keys:\n" + "\n".join(missing) + "\n\n"
+            "Add them to your .env file or export them as environment variables."
+        )
+
+
+def _validate_execution_tools() -> list[str]:
+    """Check that Maven and Docker are available. Return list of warnings."""
+    warnings = []
+    if not shutil.which("mvn"):
+        warnings.append("Maven (mvn) not found — test compilation and execution will fail")
+    if not shutil.which("docker"):
+        warnings.append("Docker not found — app deployment will fail")
+    return warnings
+
+
+def _validate_app_exists(config: Config, app_name: str) -> bool:
+    """Check that a specific app's test directory exists."""
+    test_dir = config.get_app_test_path(app_name)
+    if not test_dir.exists():
+        click.echo(
+            click.style(f"  Error: Test directory not found for {app_name}", fg="red") + "\n"
+            f"  Expected: {test_dir}\n"
+            f"  Check that the BEWT repo is cloned at: {config.bewt_repo_path}"
+        )
+        return False
+    return True
+
+
+class TreatmentType(click.ParamType):
+    """Custom Click type that accepts treatments as separate flags or space-separated."""
+    name = "treatment"
+
+    def convert(self, value, param, ctx):
+        value = value.upper()
+        if value not in ("A", "B", "C"):
+            self.fail(f"'{value}' is not a valid treatment. Choose from: A, B, C", param, ctx)
+        return value
+
+
 @click.group()
 @click.option("--config-dir", type=click.Path(exists=True), default=None, help="Config directory")
 @click.pass_context
@@ -45,24 +106,30 @@ def main(ctx, config_dir):
 def parse(ctx, app):
     """Parse test files and extract assertions."""
     config = ctx.obj["config"]
+    _validate_bewt_repo(config)
     apps = app if app else list(config.apps.keys())
+
+    total_tests = 0
+    total_assertions = 0
 
     for app_name in apps:
         click.echo(f"\n=== Parsing {app_name} ===")
+        if not _validate_app_exists(config, app_name):
+            continue
+
         app_config = config.apps[app_name]
         version = app_config["versions"][0]
         test_dir = config.get_app_test_path(app_name)
-
-        if not test_dir.exists():
-            click.echo(f"  Test dir not found: {test_dir}")
-            continue
 
         # Load Strings constants if available
         strings_path = config.get_app_project_path(app_name) / "src" / "main" / "java" / "utils" / "Strings.java"
         constants = resolve_strings_constants(strings_path)
 
         records = parse_all_tests(test_dir, app_name, app_config["variant"], version, constants)
-        click.echo(f"  Found {len(records)} test files with {sum(r.assertion_count for r in records)} assertions")
+        n_assertions = sum(r.assertion_count for r in records)
+        click.echo(f"  Found {len(records)} test files with {n_assertions} assertions")
+        total_tests += len(records)
+        total_assertions += n_assertions
 
         # Save parsed data
         out = config.output_dir / "parsed" / app_name
@@ -72,7 +139,7 @@ def parse(ctx, app):
             data["stripped_source"] = r.stripped_source
             (out / f"{r.class_name}.json").write_text(json.dumps(data, indent=2))
 
-    click.echo("\nParsing complete.")
+    click.echo(f"\nParsing complete: {total_tests} tests, {total_assertions} assertions across {len(apps)} apps.")
 
 
 @main.command()
@@ -81,16 +148,17 @@ def parse(ctx, app):
 def generate_variants(ctx, app):
     """Generate test variants A, B, C."""
     config = ctx.obj["config"]
+    _validate_bewt_repo(config)
     apps = app if app else list(config.apps.keys())
 
     for app_name in apps:
         click.echo(f"\n=== Generating variants for {app_name} ===")
+        if not _validate_app_exists(config, app_name):
+            continue
+
         app_config = config.apps[app_name]
         version = app_config["versions"][0]
         test_dir = config.get_app_test_path(app_name)
-
-        if not test_dir.exists():
-            continue
 
         # Parse tests
         strings_path = config.get_app_project_path(app_name) / "src" / "main" / "java" / "utils" / "Strings.java"
@@ -124,6 +192,7 @@ def generate_variants(ctx, app):
 def capture_html(ctx, app):
     """Capture HTML pages from running apps for variant C."""
     config = ctx.obj["config"]
+    _validate_bewt_repo(config)
     apps = app if app else list(config.apps.keys())
 
     docker = DockerManager(config)
@@ -143,40 +212,57 @@ def capture_html(ctx, app):
 @main.command()
 @click.option("--app", "-a", multiple=True, help="App(s) to run experiments on")
 @click.option("--model", "-m", multiple=True, help="Model(s) to use")
-@click.option("--treatment", "-t", multiple=True, help="Treatment(s): A, B, C")
-@click.option("--skip-execution", is_flag=True, help="Skip test execution (only generate assertions)")
+@click.option("--treatment", "-t", multiple=True, type=TreatmentType(), help="Treatment(s): A, B, C")
+@click.option("--execute", is_flag=True, default=False, help="Compile and run assertions against live apps (requires Maven + Docker)")
 @click.pass_context
-def run(ctx, app, model, treatment, skip_execution):
+def run(ctx, app, model, treatment, execute):
     """Run the full experiment pipeline."""
     config = ctx.obj["config"]
+    _validate_bewt_repo(config)
     apps = app if app else list(config.apps.keys())
     models = model if model else [config.default_model]
-    treatments = treatment if treatment else ["A", "B", "C"]
+    treatments = treatment if treatment else ("A", "B", "C")
+
+    # Validate API keys before starting
+    _validate_api_keys(config, list(models))
+
+    # Warn about execution requirements
+    if execute:
+        warnings = _validate_execution_tools()
+        for w in warnings:
+            click.echo(click.style(f"Warning: {w}", fg="yellow"))
+        if warnings:
+            if not click.confirm("Continue anyway?"):
+                return
+
+    # Count total experiments for progress
+    total_experiments = 0
+    for model_name in models:
+        for app_name in apps:
+            test_dir = config.get_app_test_path(app_name)
+            if test_dir.exists():
+                n_tests = len([f for f in test_dir.glob("*.java") if f.stem not in ("BaseTest", "TestSuite", "Installer")])
+                total_experiments += n_tests * len(treatments)
 
     store = ResultStore(config.output_dir / "results.db")
-    docker = DockerManager(config)
     all_results = []
+    completed = 0
 
     for model_name in models:
         click.echo(f"\n{'='*60}")
         click.echo(f"Model: {model_name}")
         click.echo(f"{'='*60}")
 
-        try:
-            llm = create_client(config, model_name)
-        except ValueError as e:
-            click.echo(f"  Error: {e}")
-            continue
+        llm = create_client(config, model_name)
 
         for app_name in apps:
             click.echo(f"\n--- {app_name} ---")
+            if not _validate_app_exists(config, app_name):
+                continue
+
             app_config = config.apps[app_name]
             version = app_config["versions"][0]
             test_dir = config.get_app_test_path(app_name)
-
-            if not test_dir.exists():
-                click.echo(f"  Test dir not found, skipping")
-                continue
 
             # Parse tests
             strings_path = (
@@ -200,12 +286,15 @@ def run(ctx, app, model, treatment, skip_execution):
                 record.page_object_sources = po_sources
 
                 for t in treatments:
+                    completed += 1
+                    progress = f"[{completed}/{total_experiments}]"
+
                     # Check if already done (resumability)
                     if store.has_result(app_name, version, record.class_name, t, model_name):
-                        click.echo(f"  [{t}] {record.class_name}: already done, skipping")
+                        click.echo(f"  {progress} [{t}] {record.class_name}: already done, skipping")
                         continue
 
-                    click.echo(f"  [{t}] {record.class_name}: ", nl=False)
+                    click.echo(f"  {progress} [{t}] {record.class_name}: ", nl=False)
 
                     # Build variant source and prompt
                     if t == "A":
@@ -236,7 +325,7 @@ def run(ctx, app, model, treatment, skip_execution):
                     try:
                         raw_response = llm.generate(system, user)
                     except Exception as e:
-                        click.echo(f"LLM error: {e}")
+                        click.echo(click.style(f"LLM error: {e}", fg="red"))
                         result = ExperimentResult(
                             test_record=record, treatment=t, model=model_name,
                             prompt=user, raw_response=str(e),
@@ -265,15 +354,17 @@ def run(ctx, app, model, treatment, skip_execution):
                     if not valid:
                         result.error_category = ErrorCategory.NOT_EXECUTABLE
                         result.notes = "Generated assertion failed validation"
-                        click.echo("invalid assertion")
-                    elif skip_execution:
+                        click.echo(click.style("invalid assertion", fg="red"))
+                    elif not execute:
                         # Just compute similarity without running
                         result.exact_match = check_exact_match(generated, record.assertions)
                         result.semantic_similarity = compute_semantic_similarity(
                             generated, record.assertions
                         )
                         result.notes = "execution skipped"
-                        click.echo(f"sim={result.semantic_similarity:.2f}")
+                        sim = result.semantic_similarity
+                        color = "green" if sim >= 0.8 else "yellow" if sim >= 0.5 else "red"
+                        click.echo(click.style(f"sim={sim:.2f}", fg=color))
                     else:
                         # Compile and run
                         work_dir = prepare_project_copy(
@@ -303,11 +394,16 @@ def run(ctx, app, model, treatment, skip_execution):
                             result.compiles, result.passes,
                         )
 
-                        status = "PASS" if result.passes else "FAIL"
-                        click.echo(
-                            f"{status} (sim={result.semantic_similarity:.2f}, "
-                            f"cat={result.error_category.value})"
-                        )
+                        if result.passes:
+                            click.echo(click.style(
+                                f"PASS (sim={result.semantic_similarity:.2f}, "
+                                f"cat={result.error_category.value})", fg="green"
+                            ))
+                        else:
+                            click.echo(click.style(
+                                f"FAIL (sim={result.semantic_similarity:.2f}, "
+                                f"cat={result.error_category.value})", fg="red"
+                            ))
 
                     store.save_result(result)
                     all_results.append(result)
@@ -331,12 +427,15 @@ def run(ctx, app, model, treatment, skip_execution):
 def report(ctx):
     """Generate reports from stored results."""
     config = ctx.obj["config"]
-    store = ResultStore(config.output_dir / "results.db")
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found. Run the experiment first:\n  bewt-pipeline run --app expresscart --model gpt-4o --treatment A --treatment B")
+
+    store = ResultStore(db_path)
 
     rows = store.get_all_results()
     if not rows:
-        click.echo("No results found. Run the experiment first.")
-        return
+        raise click.ClickException("No results found in database. Run the experiment first.")
 
     click.echo(f"Found {len(rows)} results")
     summary = store.get_summary()
@@ -350,6 +449,13 @@ def report(ctx):
 def info(ctx):
     """Show information about configured apps and available tests."""
     config = ctx.obj["config"]
+
+    if not config.bewt_repo_path.exists():
+        raise click.ClickException(
+            f"BEWT repo not found at: {config.bewt_repo_path}\n"
+            f"  Clone it with: git clone https://github.com/nicorubi/BEWT.git {config.bewt_repo_path}\n"
+            f"  Or update bewt_repo_path in config/apps.yaml"
+        )
 
     for app_name, app_config in config.apps.items():
         version = app_config["versions"][0]

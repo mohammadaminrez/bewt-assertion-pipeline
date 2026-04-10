@@ -15,11 +15,11 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
 pip install -e .
 cp .env.example .env          # add your OPENAI_API_KEY / ANTHROPIC_API_KEY
-bewt-pipeline run --app expresscart --model gpt-4o --treatment A --treatment B --skip-execution
+bewt-pipeline run --app expresscart --model gpt-4o --treatment A --treatment B
 bewt-pipeline report
 ```
 
-`--skip-execution` computes similarity and exact match without compiling or running tests. To also measure functional pass rate, omit the flag (requires Maven + Docker + the web app running).
+By default the pipeline computes similarity and exact match without compiling or running tests. To also measure functional pass rate, add `--execute` (requires Maven + Docker + the web app running).
 
 ## How It Works
 
