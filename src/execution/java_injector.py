@@ -6,7 +6,7 @@ import re
 import shutil
 from pathlib import Path
 
-from ..parsing.assertion_model import TestRecord
+from ..models import TestRecord
 
 PLACEHOLDER = "// TODO: Insert the missing assertion here"
 

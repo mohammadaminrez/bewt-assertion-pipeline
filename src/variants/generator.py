@@ -3,7 +3,7 @@ from __future__ import annotations
 """Generate test variants A, B, C from parsed test records."""
 
 from pathlib import Path
-from ..parsing.assertion_model import TestRecord, GherkinScenario
+from ..models import TestRecord, GherkinScenario
 from ..parsing.gherkin_parser import match_gherkin_to_test, generate_comment_from_assertion
 
 PLACEHOLDER = "// TODO: Insert the missing assertion here"

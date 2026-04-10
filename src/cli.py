@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -15,21 +14,14 @@ import click
 
 from .config import Config
 from .parsing.java_parser import parse_all_tests, resolve_strings_constants
-from .parsing.gherkin_parser import parse_all_gherkin, match_gherkin_to_test
-from .parsing.assertion_model import ExperimentResult, ErrorCategory
-from .variants.generator import generate_variant_a, generate_variant_b, generate_variant_c, write_variants
+from .parsing.gherkin_parser import parse_all_gherkin
+from .models import ExperimentResult, ErrorCategory
+from .variants.generator import write_variants
 from .variants.html_capture import capture_html_for_app, capture_html_static
-from .llm.client import create_client
-from .llm.prompt_builder import (
-    build_prompt_a, build_prompt_b, build_prompt_c, build_prompt_with_page_objects,
-)
-from .llm.response_parser import extract_assertion_from_response, validate_assertion
 from .execution.docker_manager import DockerManager
-from .execution.java_injector import prepare_project_copy
-from .execution.test_runner import compile_project, run_suite_and_get_result
-from .evaluation.comparator import classify_error, compute_semantic_similarity, check_exact_match
 from .evaluation.reporter import generate_full_report
 from .data.store import ResultStore
+from .runner import run_experiment, count_experiments
 
 
 def _validate_bewt_repo(config: Config) -> None:
@@ -121,7 +113,6 @@ def parse(ctx, app):
         version = app_config["versions"][0]
         test_dir = config.get_app_test_path(app_name)
 
-        # Load Strings constants if available
         strings_path = config.get_app_project_path(app_name) / "src" / "main" / "java" / "utils" / "Strings.java"
         constants = resolve_strings_constants(strings_path)
 
@@ -131,7 +122,6 @@ def parse(ctx, app):
         total_tests += len(records)
         total_assertions += n_assertions
 
-        # Save parsed data
         out = config.output_dir / "parsed" / app_name
         out.mkdir(parents=True, exist_ok=True)
         for r in records:
@@ -160,23 +150,19 @@ def generate_variants(ctx, app):
         version = app_config["versions"][0]
         test_dir = config.get_app_test_path(app_name)
 
-        # Parse tests
         strings_path = config.get_app_project_path(app_name) / "src" / "main" / "java" / "utils" / "Strings.java"
         constants = resolve_strings_constants(strings_path)
         records = parse_all_tests(test_dir, app_name, app_config["variant"], version, constants)
 
-        # Parse gherkin
         gherkin_dir = config.get_gherkin_path(app_name)
         gherkin_map = parse_all_gherkin(gherkin_dir)
 
-        # Load captured HTML (if available)
         html_map = {}
         for r in records:
             html = capture_html_static(config, app_name, r.class_name)
             if html:
                 html_map[r.class_name] = html
 
-        # Generate variants
         output_dir = config.output_dir / "variants"
         for r in records:
             html = html_map.get(r.class_name)
@@ -199,12 +185,9 @@ def capture_html(ctx, app):
 
     for app_name in apps:
         click.echo(f"\n=== Capturing HTML for {app_name} ===")
-
-        # Ensure app is running
         if not docker.deploy_app(app_name):
             click.echo(f"  Failed to deploy {app_name}, skipping")
             continue
-
         html_map = capture_html_for_app(config, app_name)
         click.echo(f"  Captured {len(html_map)} pages")
 
@@ -219,206 +202,54 @@ def run(ctx, app, model, treatment, execute):
     """Run the full experiment pipeline."""
     config = ctx.obj["config"]
     _validate_bewt_repo(config)
-    apps = app if app else list(config.apps.keys())
-    models = model if model else [config.default_model]
-    treatments = treatment if treatment else ("A", "B", "C")
+    apps = list(app) if app else list(config.apps.keys())
+    models = list(model) if model else [config.default_model]
+    treatments = tuple(treatment) if treatment else ("A", "B", "C")
 
-    # Validate API keys before starting
-    _validate_api_keys(config, list(models))
+    _validate_api_keys(config, models)
 
-    # Warn about execution requirements
     if execute:
         warnings = _validate_execution_tools()
         for w in warnings:
             click.echo(click.style(f"Warning: {w}", fg="yellow"))
-        if warnings:
-            if not click.confirm("Continue anyway?"):
-                return
+        if warnings and not click.confirm("Continue anyway?"):
+            return
 
-    # Count total experiments for progress
-    total_experiments = 0
-    for model_name in models:
-        for app_name in apps:
-            test_dir = config.get_app_test_path(app_name)
-            if test_dir.exists():
-                n_tests = len([f for f in test_dir.glob("*.java") if f.stem not in ("BaseTest", "TestSuite", "Installer")])
-                total_experiments += n_tests * len(treatments)
+    total = count_experiments(config, apps, models, treatments)
+
+    def on_progress(completed, total_exp, t, class_name, message):
+        progress = f"[{completed}/{total_exp}]"
+        if message.startswith("model:"):
+            click.echo(f"\n{'='*60}\nModel: {message[6:]}\n{'='*60}")
+        elif message.startswith("app:"):
+            click.echo(f"\n--- {message[4:]} ---")
+        elif message.startswith("skip:"):
+            click.echo(click.style(f"  {message[5:]}: test dir not found, skipping", fg="red"))
+        elif message == "skipped":
+            click.echo(f"  {progress} [{t}] {class_name}: already done, skipping")
+        elif message == "invalid":
+            click.echo(f"  {progress} [{t}] {class_name}: " + click.style("invalid assertion", fg="red"))
+        elif message.startswith("error:"):
+            click.echo(f"  {progress} [{t}] {class_name}: " + click.style(f"LLM error: {message[6:]}", fg="red"))
+        elif message.startswith("sim="):
+            sim = float(message[4:])
+            color = "green" if sim >= 0.8 else "yellow" if sim >= 0.5 else "red"
+            click.echo(f"  {progress} [{t}] {class_name}: " + click.style(message, fg=color))
+        elif message.startswith("PASS:") or message.startswith("FAIL:"):
+            status = message[:4]
+            color = "green" if status == "PASS" else "red"
+            click.echo(f"  {progress} [{t}] {class_name}: " + click.style(message, fg=color))
+
+    results = run_experiment(
+        config, apps=apps, models=models, treatments=treatments,
+        execute=execute, on_progress=on_progress,
+    )
 
     store = ResultStore(config.output_dir / "results.db")
-    all_results = []
-    completed = 0
-
-    for model_name in models:
-        click.echo(f"\n{'='*60}")
-        click.echo(f"Model: {model_name}")
-        click.echo(f"{'='*60}")
-
-        llm = create_client(config, model_name)
-
-        for app_name in apps:
-            click.echo(f"\n--- {app_name} ---")
-            if not _validate_app_exists(config, app_name):
-                continue
-
-            app_config = config.apps[app_name]
-            version = app_config["versions"][0]
-            test_dir = config.get_app_test_path(app_name)
-
-            # Parse tests
-            strings_path = (
-                config.get_app_project_path(app_name) / "src" / "main" / "java" / "utils" / "Strings.java"
-            )
-            constants = resolve_strings_constants(strings_path)
-            records = parse_all_tests(test_dir, app_name, app_config["variant"], version, constants)
-
-            # Parse gherkin
-            gherkin_dir = config.get_gherkin_path(app_name)
-            gherkin_map = parse_all_gherkin(gherkin_dir)
-
-            # Load page object sources for prompt enhancement
-            po_dir = config.get_app_po_path(app_name)
-            po_sources = {}
-            if po_dir.exists():
-                for po_file in po_dir.glob("*.java"):
-                    po_sources[po_file.stem] = po_file.read_text()
-
-            for record in records:
-                record.page_object_sources = po_sources
-
-                for t in treatments:
-                    completed += 1
-                    progress = f"[{completed}/{total_experiments}]"
-
-                    # Check if already done (resumability)
-                    if store.has_result(app_name, version, record.class_name, t, model_name):
-                        click.echo(f"  {progress} [{t}] {record.class_name}: already done, skipping")
-                        continue
-
-                    click.echo(f"  {progress} [{t}] {record.class_name}: ", nl=False)
-
-                    # Build variant source and prompt
-                    if t == "A":
-                        variant_source = generate_variant_a(record)
-                        system, user = build_prompt_a(record)
-                    elif t == "B":
-                        variant_source = generate_variant_b(record, gherkin_map)
-                        system, user = build_prompt_b(record, variant_source)
-                    elif t == "C":
-                        variant_source = generate_variant_b(record, gherkin_map)
-                        html = capture_html_static(config, app_name, record.class_name)
-                        if html:
-                            system, user = build_prompt_c(record, variant_source, html)
-                        else:
-                            # Fallback to B if no HTML available
-                            system, user = build_prompt_b(record, variant_source)
-                            click.echo("(no HTML, falling back to B) ", nl=False)
-                    else:
-                        click.echo(f"Unknown treatment: {t}")
-                        continue
-
-                    # Add page object context
-                    system, user = build_prompt_with_page_objects(
-                        (system, user), record.page_object_sources
-                    )
-
-                    # Call LLM
-                    try:
-                        raw_response = llm.generate(system, user)
-                    except Exception as e:
-                        click.echo(click.style(f"LLM error: {e}", fg="red"))
-                        result = ExperimentResult(
-                            test_record=record, treatment=t, model=model_name,
-                            prompt=user, raw_response=str(e),
-                            generated_assertion="",
-                            error_category=ErrorCategory.NOT_EXECUTABLE,
-                            notes=f"LLM error: {e}",
-                        )
-                        store.save_result(result)
-                        all_results.append(result)
-                        continue
-
-                    # Extract assertion
-                    generated = extract_assertion_from_response(raw_response)
-                    valid = validate_assertion(generated)
-
-                    # Initialize result
-                    result = ExperimentResult(
-                        test_record=record,
-                        treatment=t,
-                        model=model_name,
-                        prompt=user,
-                        raw_response=raw_response,
-                        generated_assertion=generated,
-                    )
-
-                    if not valid:
-                        result.error_category = ErrorCategory.NOT_EXECUTABLE
-                        result.notes = "Generated assertion failed validation"
-                        click.echo(click.style("invalid assertion", fg="red"))
-                    elif not execute:
-                        # Just compute similarity without running
-                        result.exact_match = check_exact_match(generated, record.assertions)
-                        result.semantic_similarity = compute_semantic_similarity(
-                            generated, record.assertions
-                        )
-                        result.notes = "execution skipped"
-                        sim = result.semantic_similarity
-                        color = "green" if sim >= 0.8 else "yellow" if sim >= 0.5 else "red"
-                        click.echo(click.style(f"sim={sim:.2f}", fg=color))
-                    else:
-                        # Compile and run
-                        work_dir = prepare_project_copy(
-                            config, app_name, record, generated,
-                            variant_source, t, model_name,
-                        )
-
-                        compile_res = compile_project(work_dir)
-                        result.compiles = compile_res.success
-
-                        if compile_res.success:
-                            test_res = run_suite_and_get_result(
-                                work_dir, record.class_name
-                            )
-                            result.passes = test_res.passed
-                            if test_res.error_message:
-                                result.notes = test_res.error_message[:500]
-                        else:
-                            result.notes = "; ".join(compile_res.errors[:3])
-
-                        result.exact_match = check_exact_match(generated, record.assertions)
-                        result.semantic_similarity = compute_semantic_similarity(
-                            generated, record.assertions
-                        )
-                        result.error_category = classify_error(
-                            generated, record.assertions,
-                            result.compiles, result.passes,
-                        )
-
-                        if result.passes:
-                            click.echo(click.style(
-                                f"PASS (sim={result.semantic_similarity:.2f}, "
-                                f"cat={result.error_category.value})", fg="green"
-                            ))
-                        else:
-                            click.echo(click.style(
-                                f"FAIL (sim={result.semantic_similarity:.2f}, "
-                                f"cat={result.error_category.value})", fg="red"
-                            ))
-
-                    store.save_result(result)
-                    all_results.append(result)
-
-    # Generate reports
-    if all_results:
-        click.echo(f"\n{'='*60}")
-        click.echo("Generating reports...")
-        generate_full_report(all_results, config.output_dir / "reports")
-
     summary = store.get_summary()
     click.echo(f"\nTotal experiments: {summary['total']}")
     for t, s in summary.get("by_treatment", {}).items():
         click.echo(f"  Treatment {t}: {s['count']} tests, {s['passes']} pass, {s['exact']} exact")
-
     store.close()
 
 
@@ -429,18 +260,22 @@ def report(ctx):
     config = ctx.obj["config"]
     db_path = config.output_dir / "results.db"
     if not db_path.exists():
-        raise click.ClickException("No results database found. Run the experiment first:\n  bewt-pipeline run --app expresscart --model gpt-4o --treatment A --treatment B")
+        raise click.ClickException(
+            "No results database found. Run the experiment first:\n"
+            "  bewt-pipeline run --app expresscart --model gpt-4o --treatment A --treatment B"
+        )
 
     store = ResultStore(db_path)
-
-    rows = store.get_all_results()
-    if not rows:
+    results = store.load_experiment_results()
+    if not results:
         raise click.ClickException("No results found in database. Run the experiment first.")
 
-    click.echo(f"Found {len(rows)} results")
+    click.echo(f"Found {len(results)} results")
+    generate_full_report(results, config.output_dir / "reports")
+    click.echo(f"Reports written to {config.output_dir / 'reports'}")
+
     summary = store.get_summary()
     click.echo(json.dumps(summary, indent=2))
-
     store.close()
 
 
@@ -449,13 +284,7 @@ def report(ctx):
 def info(ctx):
     """Show information about configured apps and available tests."""
     config = ctx.obj["config"]
-
-    if not config.bewt_repo_path.exists():
-        raise click.ClickException(
-            f"BEWT repo not found at: {config.bewt_repo_path}\n"
-            f"  Clone it with: git clone https://github.com/nicorubi/BEWT.git {config.bewt_repo_path}\n"
-            f"  Or update bewt_repo_path in config/apps.yaml"
-        )
+    _validate_bewt_repo(config)
 
     for app_name, app_config in config.apps.items():
         version = app_config["versions"][0]

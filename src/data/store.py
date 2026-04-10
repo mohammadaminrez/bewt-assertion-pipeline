@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from ..parsing.assertion_model import ExperimentResult, ErrorCategory, TestRecord
+from ..models import AssertionRecord, AssertionType, ExperimentResult, ErrorCategory, TestRecord
 
 
 class ResultStore:
@@ -126,6 +126,45 @@ class ResultStore:
                 for row in by_model
             },
         }
+
+    def load_experiment_results(self) -> list[ExperimentResult]:
+        """Reconstruct ExperimentResult objects from stored DB rows."""
+        rows = self.get_all_results()
+        results = []
+        for row in rows:
+            # Build a stub TestRecord with gold_standard parsed back into an AssertionRecord
+            gold_text = row.get("gold_standard", "") or ""
+            assertions = []
+            if gold_text.strip():
+                for line in gold_text.split("\n"):
+                    line = line.strip()
+                    if line:
+                        assertions.append(AssertionRecord(
+                            assertion_type=AssertionType.ASSERT_EQUALS,
+                            full_text=line,
+                            start_line=0, end_line=0,
+                        ))
+
+            record = TestRecord(
+                app=row["app"], variant=row["variant"], version=row["version"],
+                file_path="", class_name=row["class_name"],
+                method_name=row["method_name"],
+                assertions=assertions,
+            )
+            results.append(ExperimentResult(
+                test_record=record,
+                treatment=row["treatment"], model=row["model"],
+                prompt=row.get("prompt", "") or "",
+                raw_response=row.get("raw_response", "") or "",
+                generated_assertion=row.get("generated_assertion", "") or "",
+                compiles=bool(row.get("compiles", 0)),
+                passes=bool(row.get("passes", 0)),
+                exact_match=bool(row.get("exact_match", 0)),
+                error_category=ErrorCategory(row.get("error_category", "not_executable")),
+                semantic_similarity=row.get("semantic_similarity", 0.0) or 0.0,
+                notes=row.get("notes", "") or "",
+            ))
+        return results
 
     def close(self) -> None:
         self.conn.close()

@@ -1,11 +1,8 @@
 """Manual pipeline verification: trace a test case through every stage."""
 
 from __future__ import annotations
-import json, sys, textwrap
+import json, textwrap
 from pathlib import Path
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import Config
 from src.parsing.java_parser import parse_test_file, resolve_strings_constants, extract_assertions, strip_assertions
@@ -17,7 +14,7 @@ from src.evaluation.comparator import (
     compute_semantic_similarity, check_exact_match, classify_error,
     _normalize, _extract_string_literals, _extract_assertion_types, _set_similarity, _normalized_levenshtein,
 )
-from src.parsing.assertion_model import ErrorCategory
+from src.models import ErrorCategory
 from src.data.store import ResultStore
 
 W = 90

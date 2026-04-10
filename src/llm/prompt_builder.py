@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Build prompts for each treatment variant."""
 
-from ..parsing.assertion_model import TestRecord
+from ..models import TestRecord
 
 SYSTEM_PROMPT = """You are an expert Java/Selenium test engineer. You are given a JUnit/Selenium test method where the assertion(s) have been removed and replaced with a TODO placeholder.
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 """Compare generated assertions with gold-standard assertions."""
 
 import re
-from ..parsing.assertion_model import AssertionRecord, AssertionType, ErrorCategory
+from ..models import AssertionRecord, AssertionType, ErrorCategory
 
 
 def classify_error(

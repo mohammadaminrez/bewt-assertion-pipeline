@@ -6,7 +6,7 @@ import csv
 import json
 from pathlib import Path
 
-from ..parsing.assertion_model import ExperimentResult
+from ..models import ExperimentResult
 from .metrics import (
     AggregateMetrics,
     compute_aggregate_metrics,
@@ -36,7 +36,6 @@ def generate_full_report(results: list[ExperimentResult], output_dir: Path) -> N
     # LaTeX tables
     write_latex_tables(results, output_dir)
 
-    print(f"Reports written to {output_dir}")
 
 
 def write_raw_csv(results: list[ExperimentResult], path: Path) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .assertion_model import GherkinScenario
+from ..models import GherkinScenario
 
 
 def parse_feature_file(file_path: Path) -> list[GherkinScenario]:

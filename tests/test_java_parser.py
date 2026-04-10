@@ -1,13 +1,7 @@
 """Tests for the Java test file parser."""
 
-import sys
-from pathlib import Path
-
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from src.parsing.java_parser import extract_assertions, strip_assertions, parse_class_name, parse_method_name
-from src.parsing.assertion_model import AssertionType
+from src.models import AssertionType
 
 
 SAMPLE_TEST_EQUALS = """package tests;

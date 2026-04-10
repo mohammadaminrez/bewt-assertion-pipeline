@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .assertion_model import AssertionRecord, AssertionType, TestRecord
+from ..models import AssertionRecord, AssertionType, TestRecord
 
 ASSERTION_PATTERN = re.compile(
     r"(assertEquals|assertTrue|assertFalse|assertNotNull|assertNull)\s*\("
