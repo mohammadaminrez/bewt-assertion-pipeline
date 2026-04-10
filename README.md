@@ -26,12 +26,14 @@ bewt-pipeline report
 
 ## CLI Commands
 
-bewt-pipeline parse — Parse tests, extract assertions
-bewt-pipeline generate-variants — Write A/B/C variant files to disk
-bewt-pipeline capture-html — Deploy apps, capture HTML pages
-bewt-pipeline run — Full experiment: parse → prompt LLM → evaluate → report
-bewt-pipeline report — Generate reports from stored results
-bewt-pipeline info — Show configured apps and test counts
+| Command | Description |
+|---|---|
+| `bewt-pipeline parse` | Parse tests, extract assertions |
+| `bewt-pipeline generate-variants` | Write A/B/C variant files to disk |
+| `bewt-pipeline capture-html` | Deploy apps, capture HTML pages |
+| `bewt-pipeline run` | Full experiment: parse → prompt LLM → evaluate → report |
+| `bewt-pipeline report` | Generate reports from stored results |
+| `bewt-pipeline info` | Show configured apps and test counts |
 
 # 8 Web Apps Under Test
 Bludit, Claroline, ExpressCart, Joomla, Kanboard, MantisBT, MediaWiki, PrestaShop — all with Docker-based deployment.
