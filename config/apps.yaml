@@ -1,0 +1,85 @@
+apps:
+  bludit:
+    versions:
+      - "3.13.1"
+    base_url: "http://localhost:8080"
+    variant: "baseline"
+    docker_compose: null  # Set path to docker-compose.yml
+    credentials:
+      username: "admin"
+      password: "0f5c3cc1b73dce21d0c5516033185f86"
+
+  claroline:
+    versions:
+      - "1.11.10"
+    base_url: "http://localhost:8080"
+    variant: "baseline"
+    docker_compose: null
+    credentials:
+      username: "admin"
+      password: "admin"
+
+  expresscart:
+    versions:
+      - "1.19"
+    base_url: "http://localhost:3000"
+    variant: "baseline"
+    docker_compose: null
+    credentials:
+      admin_email: "owner@test.com"
+      admin_password: "e2eW3Bt3s71nGB3nchM4rK"
+      user_email: "test@test.com"
+      user_password: "e2eW3Bt3s71nGB3nchM4rK"
+
+  joomla:
+    versions:
+      - "4.2.0"
+    base_url: "http://localhost:8080"
+    variant: "baseline"
+    docker_compose: null
+    credentials:
+      username: "admin"
+      password: "admin"
+
+  kanboard:
+    versions:
+      - "1.2.15"
+    base_url: "http://localhost:8080"
+    variant: "baseline"
+    docker_compose: null
+    credentials:
+      username: "admin"
+      password: "admin"
+
+  mantisbt:
+    versions:
+      - "2.25.4"
+    base_url: "http://localhost:8080"
+    variant: "baseline"
+    docker_compose: null
+    credentials:
+      username: "administrator"
+      password: "root"
+
+  mediawiki:
+    versions:
+      - "1.40.0"
+    base_url: "http://localhost:8080"
+    variant: "baseline"
+    docker_compose: null
+    credentials:
+      username: "admin"
+      password: "admin"
+
+  prestashop:
+    versions:
+      - "1.7.8.5"
+    base_url: "http://localhost:8080"
+    variant: "baseline"
+    docker_compose: null
+    credentials:
+      username: "admin"
+      password: "admin"
+
+bewt_repo_path: "../BEWT"
+output_dir: "./output"

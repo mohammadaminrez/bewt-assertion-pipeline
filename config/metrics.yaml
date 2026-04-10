@@ -1,0 +1,23 @@
+evaluation:
+  error_categories:
+    - "correct"
+    - "over_assertive"
+    - "under_assertive"
+    - "wrong_assertion"
+    - "not_executable"
+
+  functional_accuracy:
+    description: "Whether the generated assertion compiles and passes"
+
+  semantic_similarity:
+    assertion_type_weight: 0.2
+    expected_value_weight: 0.4
+    actual_expression_weight: 0.4
+
+  statistical_tests:
+    - "friedman"
+    - "wilcoxon_signed_rank"
+    - "cliffs_delta"
+    - "cohens_r"
+
+  significance_level: 0.05
