@@ -32,7 +32,6 @@ By default the pipeline computes similarity and exact match without compiling or
 7. **Execute** (optional) -- Injects the generated assertion into a Maven project copy, compiles, and runs against a Dockerized app to measure functional pass rate.
 8. **Report** -- Outputs per-treatment, per-app, and per-model CSVs, LaTeX tables, and Friedman/Wilcoxon/Cliff's delta statistical tests.
 9. **Store** -- All results are saved to SQLite with a unique key per (app, test, treatment, model), enabling resumable runs.
-10. **Verify** -- Run `python tests/verify_pipeline.py` to trace individual test cases through every stage.
 
 ## CLI Commands
 
@@ -44,6 +43,31 @@ By default the pipeline computes similarity and exact match without compiling or
 | `bewt-pipeline run` | Full experiment: parse → prompt LLM → evaluate → report |
 | `bewt-pipeline report` | Generate reports from stored results |
 | `bewt-pipeline info` | Show configured apps and test counts |
+
+## Testing
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v
+```
+
+37 tests covering the Java parser, semantic similarity metric, and LLM response extraction.
+
+## Project Structure
+
+```
+src/
+├── models.py          # Shared data models (TestRecord, ExperimentResult, ...)
+├── runner.py          # Core experiment logic (no CLI dependency, notebook-callable)
+├── cli.py             # Click CLI wrapper
+├── config.py          # YAML config loader
+├── parsing/           # Java test + Gherkin feature file parsing
+├── variants/          # Test variant generation (A/B/C) + HTML capture
+├── llm/               # LLM client, prompt builder, response parser
+├── execution/         # Maven compile/run, Docker management
+├── evaluation/        # Similarity metrics, error classification, reporting
+└── data/              # SQLite result storage
+```
 
 ## 8 Web Apps Under Test
 
