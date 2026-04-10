@@ -15,13 +15,14 @@ bewt-pipeline run --app expresscart --model gpt-4o --treatment A --treatment B
 bewt-pipeline report
 ```
 
-By default the pipeline computes similarity and exact match only. Add `--execute` to compile and run assertions against live apps (requires Maven + Docker).
+By default the pipeline computes similarity and exact match only. Add `--execute` to compile and run assertions against live apps (requires Maven).
 
 ## Prerequisites
 
 - Python 3.9+
 - [BEWT repo](https://github.com/nicorubi/BEWT) cloned at `../BEWT`
-- For `--execute` mode: Maven + Docker
+- For Treatment C (`capture-html`): Maven + the web app running at its configured URL
+- For `--execute` mode: Maven + the web app running at its configured URL
 
 ## CLI Commands
 

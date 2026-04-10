@@ -49,13 +49,11 @@ def _validate_api_keys(config: Config, model_names: list[str]) -> None:
         )
 
 
-def _validate_execution_tools() -> list[str]:
-    """Check that Maven and Docker are available. Return list of warnings."""
+def _validate_maven() -> list[str]:
+    """Check that Maven is available. Return list of warnings."""
     warnings = []
     if not shutil.which("mvn"):
-        warnings.append("Maven (mvn) not found — test compilation and execution will fail")
-    if not shutil.which("docker"):
-        warnings.append("Docker not found — app deployment will fail")
+        warnings.append("Maven (mvn) not found — install with: brew install maven")
     return warnings
 
 
@@ -184,7 +182,7 @@ def capture_html(ctx, app):
     docker = DockerManager(config)
 
     # Check requirements upfront
-    warnings = _validate_execution_tools()
+    warnings = _validate_maven()
     for w in warnings:
         click.echo(click.style(f"Warning: {w}", fg="yellow"))
     if warnings and not click.confirm("Continue anyway?"):
@@ -216,7 +214,7 @@ def run(ctx, app, model, treatment, execute):
     _validate_api_keys(config, models)
 
     if execute:
-        warnings = _validate_execution_tools()
+        warnings = _validate_maven()
         for w in warnings:
             click.echo(click.style(f"Warning: {w}", fg="yellow"))
         if warnings and not click.confirm("Continue anyway?"):
