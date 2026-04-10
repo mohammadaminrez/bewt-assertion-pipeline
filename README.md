@@ -1,74 +1,45 @@
 # BEWT Assertion Pipeline
 
-Evaluates how well LLMs generate Selenium test assertions under three context levels: (A) code only, (B) code + Gherkin comment, (C) code + comment + HTML page.
-
-## Prerequisites
-
-- Python 3.9+
-- The [BEWT benchmark repo](https://github.com/nicorubi/BEWT) cloned at `../BEWT` (sibling directory)
-- For full execution mode (optional): Maven and Docker
+Evaluates how well LLMs generate Selenium test assertions under three context levels:
+- **A** -- test code only
+- **B** -- test code + Gherkin comment
+- **C** -- test code + comment + HTML page
 
 ## Quick Start
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip
-pip install -e .
-cp .env.example .env          # add your OPENAI_API_KEY / ANTHROPIC_API_KEY
+pip install --upgrade pip && pip install -e .
+cp .env.example .env          # add your API keys
 bewt-pipeline run --app expresscart --model gpt-4o --treatment A --treatment B
 bewt-pipeline report
 ```
 
-By default the pipeline computes similarity and exact match without compiling or running tests. To also measure functional pass rate, add `--execute` (requires Maven + Docker + the web app running).
+By default the pipeline computes similarity and exact match only. Add `--execute` to compile and run assertions against live apps (requires Maven + Docker).
 
-## How It Works
+## Prerequisites
 
-1. **Parse** -- Reads Java/Selenium test files from the BEWT benchmark (8 web apps, 362 assertions) and extracts gold-standard assertions.
-2. **Strip** -- Removes assertions from each test, replacing them with a `// TODO` placeholder.
-3. **Generate variants** -- Creates three versions per test: A (no hint), B (descriptive comment from Gherkin `Then` clauses), C (comment + captured HTML page source).
-4. **Prompt LLM** -- Sends each variant to a configured model (GPT-4o, GPT-4o-mini, Claude Sonnet, Claude Haiku) with a system prompt requesting only assertion code.
-5. **Extract** -- Parses the LLM response to isolate the generated assertion statement(s).
-6. **Evaluate** -- Computes exact match, weighted semantic similarity (type + expected values + Levenshtein), and classifies errors (correct, over/under-assertive, wrong, not executable).
-7. **Execute** (optional) -- Injects the generated assertion into a Maven project copy, compiles, and runs against a Dockerized app to measure functional pass rate.
-8. **Report** -- Outputs per-treatment, per-app, and per-model CSVs, LaTeX tables, and Friedman/Wilcoxon/Cliff's delta statistical tests.
-9. **Store** -- All results are saved to SQLite with a unique key per (app, test, treatment, model), enabling resumable runs.
+- Python 3.9+
+- [BEWT repo](https://github.com/nicorubi/BEWT) cloned at `../BEWT`
+- For `--execute` mode: Maven + Docker
 
 ## CLI Commands
 
 | Command | Description |
 |---|---|
+| `bewt-pipeline info` | Show configured apps and test counts |
 | `bewt-pipeline parse` | Parse tests, extract assertions |
 | `bewt-pipeline generate-variants` | Write A/B/C variant files to disk |
-| `bewt-pipeline capture-html` | Deploy apps, capture HTML pages |
-| `bewt-pipeline run` | Full experiment: parse → prompt LLM → evaluate → report |
-| `bewt-pipeline report` | Generate reports from stored results |
-| `bewt-pipeline info` | Show configured apps and test counts |
+| `bewt-pipeline run` | Run experiment: prompt LLM, evaluate, report |
+| `bewt-pipeline report` | Regenerate reports from stored results |
+| `bewt-pipeline capture-html` | Capture HTML pages for treatment C |
 
 ## Testing
 
 ```bash
-pip install -e ".[dev]"
-pytest tests/ -v
+pip install -e ".[dev]" && pytest tests/ -v
 ```
 
-37 tests covering the Java parser, semantic similarity metric, and LLM response extraction.
+## Apps
 
-## Project Structure
-
-```
-src/
-├── models.py          # Shared data models (TestRecord, ExperimentResult, ...)
-├── runner.py          # Core experiment logic (no CLI dependency, notebook-callable)
-├── cli.py             # Click CLI wrapper
-├── config.py          # YAML config loader
-├── parsing/           # Java test + Gherkin feature file parsing
-├── variants/          # Test variant generation (A/B/C) + HTML capture
-├── llm/               # LLM client, prompt builder, response parser
-├── execution/         # Maven compile/run, Docker management
-├── evaluation/        # Similarity metrics, error classification, reporting
-└── data/              # SQLite result storage
-```
-
-## 8 Web Apps Under Test
-
-Bludit, Claroline, ExpressCart, Joomla, Kanboard, MantisBT, MediaWiki, PrestaShop -- all with Docker-based deployment.
+Bludit, Claroline, ExpressCart, Joomla, Kanboard, MantisBT, MediaWiki, PrestaShop.
