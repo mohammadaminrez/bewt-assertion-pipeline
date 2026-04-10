@@ -2,15 +2,24 @@
 
 Evaluates how well LLMs generate Selenium test assertions under three context levels: (A) code only, (B) code + Gherkin comment, (C) code + comment + HTML page.
 
+## Prerequisites
+
+- Python 3.9+
+- The [BEWT benchmark repo](https://github.com/nicorubi/BEWT) cloned at `../BEWT` (sibling directory)
+- For full execution mode (optional): Maven and Docker
+
 ## Quick Start
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
 pip install -e .
 cp .env.example .env          # add your OPENAI_API_KEY / ANTHROPIC_API_KEY
-bewt-pipeline run --app expresscart --model gpt-4o --treatment A --treatment B
+bewt-pipeline run --app expresscart --model gpt-4o --treatment A --treatment B --skip-execution
 bewt-pipeline report
 ```
+
+`--skip-execution` computes similarity and exact match without compiling or running tests. To also measure functional pass rate, omit the flag (requires Maven + Docker + the web app running).
 
 ## How It Works
 
@@ -36,5 +45,6 @@ bewt-pipeline report
 | `bewt-pipeline report` | Generate reports from stored results |
 | `bewt-pipeline info` | Show configured apps and test counts |
 
-# 8 Web Apps Under Test
-Bludit, Claroline, ExpressCart, Joomla, Kanboard, MantisBT, MediaWiki, PrestaShop — all with Docker-based deployment.
+## 8 Web Apps Under Test
+
+Bludit, Claroline, ExpressCart, Joomla, Kanboard, MantisBT, MediaWiki, PrestaShop -- all with Docker-based deployment.
