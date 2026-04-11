@@ -54,7 +54,7 @@ apps:
   mantisbt:
     versions:
       - "2.25.4"
-    base_url: "http://localhost:8080"
+    base_url: "http://localhost:8989"
     variant: "baseline"
     docker_compose: null
     credentials:
