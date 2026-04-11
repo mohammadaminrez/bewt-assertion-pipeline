@@ -13,6 +13,7 @@ def capture_html_for_app(
     app: str,
     variant: str | None = None,
     version: str | None = None,
+    on_progress: callable | None = None,
 ) -> dict[str, str]:
     """Capture HTML page sources by running instrumented tests.
 
@@ -24,17 +25,25 @@ def capture_html_for_app(
 
     Returns a mapping of test_class_name -> html_content.
     """
+    def _log(msg: str):
+        if on_progress:
+            on_progress(msg)
+        else:
+            print(msg)
+
     project_path = config.get_app_project_path(app, variant, version)
     capture_dir = config.output_dir / "html_capture" / app
     capture_dir.mkdir(parents=True, exist_ok=True)
 
     # Create instrumented copy
+    _log("  Copying project...")
     instrumented_path = config.output_dir / "instrumented" / app
     if instrumented_path.exists():
         shutil.rmtree(instrumented_path)
     shutil.copytree(project_path, instrumented_path)
 
     # Inject page source capture into BaseTest
+    _log("  Injecting HTML capture hooks...")
     _inject_capture_hook(instrumented_path, capture_dir)
 
     # Run tests to capture HTML
@@ -44,16 +53,40 @@ def capture_html_for_app(
             "  Install Maven: https://maven.apache.org/install.html"
         )
 
-    result = subprocess.run(
-        ["mvn", "test", "-Dtest=TestSuite", "-pl", "."],
+    # Find the test package name for the -Dtest argument
+    java_root = instrumented_path / "src" / "test" / "java"
+    test_pkg = ""
+    for candidate in java_root.iterdir():
+        if candidate.is_dir() and (candidate / "TestSuite.java").exists():
+            test_pkg = candidate.name + "."
+            break
+
+    _log("  Running Maven tests (this may take a few minutes)...")
+    process = subprocess.Popen(
+        ["mvn", "test", f"-Dtest={test_pkg}TestSuite", "-pl", "."],
         cwd=str(instrumented_path),
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        timeout=600,
     )
 
-    if result.returncode != 0:
-        print(f"Warning: Test run for HTML capture had failures (expected): {result.returncode}")
+    for line in process.stdout:
+        line = line.rstrip()
+        # Show key Maven events
+        if "Downloading from" in line and "Downloading" not in (on_progress and "shown" or ""):
+            _log("  Downloading dependencies...")
+            on_progress and setattr(on_progress, "shown", True)  # only show once
+        elif "Running " in line and "tests." in line.lower():
+            test_name = line.split("Running ")[-1].strip()
+            _log(f"  Running: {test_name}")
+        elif "Tests run:" in line:
+            _log(f"  {line.strip()}")
+        elif "BUILD SUCCESS" in line:
+            _log("  Maven build succeeded")
+        elif "BUILD FAILURE" in line:
+            _log("  Maven build had failures (some test failures are expected)")
+
+    process.wait()
 
     # Collect captured HTML files
     html_map = {}
@@ -69,7 +102,15 @@ def _inject_capture_hook(project_path: Path, capture_dir: Path) -> None:
 
     Adds a line to save driver.getPageSource() right before assertion lines.
     """
-    test_dir = project_path / "src" / "test" / "java" / "tests"
+    java_root = project_path / "src" / "test" / "java"
+    # Find the actual test package (could be "tests", "mediawiki", app name, etc.)
+    test_dir = None
+    for candidate in java_root.iterdir():
+        if candidate.is_dir() and any(candidate.glob("*.java")):
+            test_dir = candidate
+            break
+    if test_dir is None:
+        return
 
     for java_file in test_dir.glob("*.java"):
         if java_file.stem in ("BaseTest", "TestSuite", "Installer"):
@@ -78,11 +119,12 @@ def _inject_capture_hook(project_path: Path, capture_dir: Path) -> None:
         source = java_file.read_text()
         class_name = java_file.stem
 
-        # Add import
+        # Add import — detect the actual package name
         if "java.nio.file" not in source:
+            pkg_name = test_dir.name
             source = source.replace(
-                "package tests;",
-                "package tests;\n\nimport java.nio.file.Files;\nimport java.nio.file.Paths;",
+                f"package {pkg_name};",
+                f"package {pkg_name};\n\nimport java.nio.file.Files;\nimport java.nio.file.Paths;",
             )
 
         # Insert capture before each assertion

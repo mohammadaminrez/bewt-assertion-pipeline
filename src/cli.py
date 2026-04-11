@@ -19,6 +19,7 @@ from .models import ExperimentResult, ErrorCategory
 from .variants.generator import write_variants
 from .variants.html_capture import capture_html_for_app, capture_html_static
 from .execution.docker_manager import DockerManager
+from .execution.app_setup import run_installer
 from .evaluation.reporter import generate_full_report
 from .data.store import ResultStore
 from .runner import run_experiment, count_experiments
@@ -193,7 +194,7 @@ def capture_html(ctx, app):
         if not docker.deploy_app(app_name):
             click.echo(f"  Failed to deploy {app_name}, skipping")
             continue
-        html_map = capture_html_for_app(config, app_name)
+        html_map = capture_html_for_app(config, app_name, on_progress=click.echo)
         click.echo(f"  Captured {len(html_map)} pages")
 
 
@@ -284,6 +285,43 @@ def report(ctx):
     summary = store.get_summary()
     click.echo(json.dumps(summary, indent=2))
     store.close()
+
+
+@main.command()
+@click.option("--app", "-a", required=True, help="App to set up")
+@click.pass_context
+def setup_app(ctx, app):
+    """Deploy and configure a web app (Docker + Installer)."""
+    config = ctx.obj["config"]
+    _validate_bewt_repo(config)
+
+    if app not in config.apps:
+        raise click.ClickException(f"Unknown app: {app}. Available: {', '.join(config.apps.keys())}")
+
+    warnings = _validate_maven()
+    for w in warnings:
+        click.echo(click.style(f"Warning: {w}", fg="yellow"))
+    if warnings and not click.confirm("Continue anyway?"):
+        return
+
+    docker = DockerManager(config)
+
+    click.echo(f"\n=== Setting up {app} ===")
+
+    # Step 1: Deploy
+    click.echo("Step 1: Deploy app...")
+    if not docker.deploy_app(app):
+        raise click.ClickException(f"Failed to deploy {app}. Make sure Docker is running or start the app manually.")
+
+    # Step 2: Run installer
+    click.echo("Step 2: Run installer...")
+    success = run_installer(config, app, on_progress=click.echo)
+
+    if success:
+        click.echo(click.style(f"\n{app} is ready.", fg="green"))
+        click.echo(f"You can now run: bewt-pipeline capture-html --app {app}")
+    else:
+        click.echo(click.style(f"\n{app} setup failed. Check the errors above.", fg="red"))
 
 
 @main.command()

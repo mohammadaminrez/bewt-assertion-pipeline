@@ -77,17 +77,21 @@ class DockerManager:
         return None
 
     def _wait_for_app(self, url: str, timeout: int = 60, interval: int = 3) -> bool:
-        """Wait until the app responds to HTTP requests."""
-        import urllib.request
-        import urllib.error
+        """Wait until the app responds to HTTP requests (any response counts)."""
+        import http.client
+        import urllib.parse
 
+        parsed = urllib.parse.urlparse(url)
         start = time.time()
         while time.time() - start < timeout:
             try:
-                urllib.request.urlopen(url, timeout=5)
-                print(f"  App ready at {url}")
+                conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=5)
+                conn.request("HEAD", parsed.path or "/")
+                resp = conn.getresponse()
+                conn.close()
+                print(f"  App ready at {url} (HTTP {resp.status})")
                 return True
-            except (urllib.error.URLError, ConnectionError, OSError):
+            except (ConnectionError, OSError, http.client.HTTPException):
                 time.sleep(interval)
 
         print(f"  Timeout waiting for app at {url}")
