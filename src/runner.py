@@ -12,7 +12,8 @@ from .variants.generator import generate_variant_a, generate_variant_b
 from .variants.html_capture import capture_html_static
 from .llm.client import create_client
 from .llm.prompt_builder import (
-    build_prompt_a, build_prompt_b, build_prompt_c, build_prompt_with_page_objects,
+    build_prompt_a, build_prompt_b, build_prompt_c, build_prompt_d,
+    build_prompt_with_page_objects,
 )
 from .llm.response_parser import extract_assertion_from_response, validate_assertion
 from .execution.java_injector import prepare_project_copy
@@ -90,6 +91,7 @@ def run_experiment(
                 config.get_app_project_path(app_name) / "src" / "main" / "java" / "utils" / "Strings.java"
             )
             constants = resolve_strings_constants(strings_path)
+            strings_source = strings_path.read_text() if strings_path.exists() else ""
             records = parse_all_tests(test_dir, app_name, app_config["variant"], version, constants)
 
             # Parse gherkin
@@ -129,6 +131,14 @@ def run_experiment(
                         else:
                             _progress(t, record.class_name, "no_html")
                             system, user = build_prompt_b(record, variant_source)
+                    elif t == "D":
+                        variant_source = generate_variant_b(record, gherkin_map)
+                        html = capture_html_static(config, app_name, record.class_name)
+                        if not html:
+                            _progress(t, record.class_name, "no_html")
+                        system, user = build_prompt_d(
+                            record, variant_source, html, strings_source
+                        )
                     else:
                         continue
 
