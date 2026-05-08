@@ -111,8 +111,11 @@ def prepare_project_copy(
 
     _fix_java_version(work_dir)
 
-    # Write the injected test file
-    test_file = work_dir / "src" / "test" / "java" / "tests" / Path(record.file_path).name
+    # Write the injected test file into the correct package directory
+    original = Path(record.file_path)
+    java_root = original.parent.parent  # go up from package dir to src/test/java
+    rel_path = original.relative_to(java_root)
+    test_file = work_dir / "src" / "test" / "java" / rel_path
     inject_assertion(record, generated_assertion, variant_source, test_file)
 
     return work_dir
