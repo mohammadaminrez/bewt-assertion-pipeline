@@ -17,7 +17,7 @@ from .llm.prompt_builder import (
 )
 from .llm.response_parser import extract_assertion_from_response, validate_assertion
 from .execution.java_injector import prepare_project_copy
-from .execution.test_runner import compile_project, run_suite_and_get_result
+from .execution.test_runner import compile_project, run_single_test
 from .evaluation.comparator import classify_error, compute_semantic_similarity, check_exact_match
 from .evaluation.reporter import generate_full_report
 from .data.store import ResultStore
@@ -193,7 +193,7 @@ def run_experiment(
                         result.compiles = compile_res.success
 
                         if compile_res.success:
-                            test_res = run_suite_and_get_result(work_dir, record.class_name)
+                            test_res = run_single_test(work_dir, record.class_name)
                             result.passes = test_res.passed
                             if test_res.error_message:
                                 result.notes = test_res.error_message[:500]
