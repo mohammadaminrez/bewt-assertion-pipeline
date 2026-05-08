@@ -64,6 +64,42 @@ HTML page content at the assertion point:
     return SYSTEM_PROMPT, user
 
 
+def build_prompt_d(
+    record: TestRecord,
+    variant_d_source: str,
+    html_content: str | None,
+    strings_source: str,
+) -> tuple[str, str]:
+    """Variant D: Test with comments + HTML + full project source (Strings.java)."""
+    user = f"""Complete the following Selenium test by writing the missing assertion(s) where the TODO comment is.
+Descriptive comments have been added to explain what the assertion should check.
+The HTML content of the web page and the project's utility constants (Strings.java) are also provided.
+
+Test code:
+```java
+{variant_d_source}
+```"""
+
+    if html_content:
+        if len(html_content) > 8000:
+            html_content = html_content[:8000] + "\n<!-- ... truncated ... -->"
+        user += f"""
+
+HTML page content at the assertion point:
+```html
+{html_content}
+```"""
+
+    user += f"""
+
+Project constants (Strings.java):
+```java
+{strings_source}
+```"""
+
+    return SYSTEM_PROMPT, user
+
+
 def build_prompt_with_page_objects(
     base_prompt: tuple[str, str],
     page_object_sources: dict[str, str],
