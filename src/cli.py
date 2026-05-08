@@ -21,6 +21,7 @@ from .variants.html_capture import capture_html_for_app, capture_html_static
 from .execution.docker_manager import DockerManager
 from .execution.app_setup import run_installer
 from .evaluation.reporter import generate_full_report
+from .evaluation.excel_export import export_results_to_excel, import_classifications_from_excel
 from .data.store import ResultStore
 from .runner import run_experiment, count_experiments
 
@@ -340,6 +341,62 @@ def info(ctx):
         gherkin_count = len(list(gherkin_dir.glob("*.feature"))) if gherkin_dir.exists() else 0
 
         click.echo(f"{app_name} ({version}): {test_count} test files, {gherkin_count} feature files")
+
+
+@main.command(name="export-excel")
+@click.option("--output", "-o", type=click.Path(), default=None, help="Output .xlsx path")
+@click.pass_context
+def export_excel(ctx, output):
+    """Export results to Excel for manual annotation."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found. Run the experiment first.")
+
+    store = ResultStore(db_path)
+    results = store.load_experiment_results()
+    if not results:
+        raise click.ClickException("No results found in database.")
+
+    output_path = Path(output) if output else config.output_dir / "reports" / "manual_evaluation.xlsx"
+    export_results_to_excel(results, output_path)
+    click.echo(f"Exported {len(results)} results to {output_path}")
+    click.echo("Fill in the 'Manual Classification' column, then run: bewt-pipeline import-excel")
+    store.close()
+
+
+@main.command(name="import-excel")
+@click.option("--input", "-i", "input_path", type=click.Path(exists=True), default=None, help="Annotated .xlsx path")
+@click.pass_context
+def import_excel(ctx, input_path):
+    """Import manual classifications from an annotated Excel file back into the database."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found.")
+
+    excel_path = Path(input_path) if input_path else config.output_dir / "reports" / "manual_evaluation.xlsx"
+    if not excel_path.exists():
+        raise click.ClickException(f"Excel file not found: {excel_path}")
+
+    annotations = import_classifications_from_excel(excel_path)
+    if not annotations:
+        raise click.ClickException("No manual classifications found in the Excel file.")
+
+    store = ResultStore(db_path)
+    updated = 0
+    for a in annotations:
+        if store.update_classification(
+            app=a["app"], class_name=a["class_name"],
+            treatment=a["treatment"], model=a["model"],
+            error_category=a["manual_classification"],
+            notes=a["manual_notes"],
+        ):
+            updated += 1
+
+    click.echo(f"Updated {updated}/{len(annotations)} classifications in database.")
+    click.echo("Run 'bewt-pipeline report' to regenerate reports with manual classifications.")
+    store.close()
 
 
 if __name__ == "__main__":

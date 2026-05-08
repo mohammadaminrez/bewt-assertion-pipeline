@@ -166,5 +166,16 @@ class ResultStore:
             ))
         return results
 
+    def update_classification(self, app: str, class_name: str, treatment: str, model: str,
+                              error_category: str, notes: str = "") -> bool:
+        """Update the error_category (and optionally notes) from manual annotation."""
+        cursor = self.conn.execute(
+            "UPDATE experiments SET error_category=?, notes=? "
+            "WHERE app=? AND class_name=? AND treatment=? AND model=?",
+            (error_category, notes, app, class_name, treatment, model),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
     def close(self) -> None:
         self.conn.close()
