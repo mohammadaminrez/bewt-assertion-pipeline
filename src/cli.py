@@ -77,8 +77,8 @@ class TreatmentType(click.ParamType):
 
     def convert(self, value, param, ctx):
         value = value.upper()
-        if value not in ("A", "B", "C"):
-            self.fail(f"'{value}' is not a valid treatment. Choose from: A, B, C", param, ctx)
+        if value not in ("A", "B", "C", "D"):
+            self.fail(f"'{value}' is not a valid treatment. Choose from: A, B, C, D", param, ctx)
         return value
 
 
@@ -210,7 +210,7 @@ def run(ctx, app, model, treatment, execute):
     _validate_bewt_repo(config)
     apps = list(app) if app else list(config.apps.keys())
     models = list(model) if model else [config.default_model]
-    treatments = tuple(treatment) if treatment else ("A", "B", "C")
+    treatments = tuple(treatment) if treatment else ("A", "B", "C", "D")
 
     _validate_api_keys(config, models)
 
