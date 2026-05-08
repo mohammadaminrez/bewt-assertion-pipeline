@@ -42,6 +42,9 @@ def capture_html_for_app(
         shutil.rmtree(instrumented_path)
     shutil.copytree(project_path, instrumented_path)
 
+    # Fix Java compiler target to match installed JDK
+    _fix_java_version(instrumented_path)
+
     # Inject page source capture into BaseTest
     _log("  Injecting HTML capture hooks...")
     _inject_capture_hook(instrumented_path, capture_dir)
@@ -95,6 +98,33 @@ def capture_html_for_app(
         html_map[test_name] = html_file.read_text()
 
     return html_map
+
+
+def _fix_java_version(project_path: Path) -> None:
+    """Downgrade maven.compiler.source/target to match the installed JDK."""
+    import re as _re
+    result = subprocess.run(["java", "-version"], capture_output=True, text=True)
+    version_str = result.stderr or result.stdout
+    m = _re.search(r'"(\d+)', version_str)
+    if not m:
+        return
+    jdk_major = m.group(1)
+
+    pom = project_path / "pom.xml"
+    if not pom.exists():
+        return
+    text = pom.read_text()
+    text = _re.sub(
+        r"<maven\.compiler\.source>\d+</maven\.compiler\.source>",
+        f"<maven.compiler.source>{jdk_major}</maven.compiler.source>",
+        text,
+    )
+    text = _re.sub(
+        r"<maven\.compiler\.target>\d+</maven\.compiler\.target>",
+        f"<maven.compiler.target>{jdk_major}</maven.compiler.target>",
+        text,
+    )
+    pom.write_text(text)
 
 
 def _inject_capture_hook(project_path: Path, capture_dir: Path) -> None:
