@@ -51,6 +51,7 @@ def export_results_to_excel(
             "Generated Assertion": r.generated_assertion,
             "Compiles": r.compiles,
             "Pass/Fail": "PASS" if r.passes else "FAIL",
+            "Fail Reason": r.notes if not r.passes and r.notes and r.notes != "execution skipped" else "",
             "Semantic Sim (heuristic)": round(r.semantic_similarity, 4),
             "Auto-Classification (suggestion)": r.error_category.value,
             "Manual Classification": pre_class,
@@ -128,7 +129,7 @@ def _apply_formatting(ws, num_rows: int) -> None:
         "App": 12, "Test Class": 25, "Method": 20,
         "Treatment": 10, "Model": 15,
         "Gold Standard Assertion": 50, "Generated Assertion": 50,
-        "Compiles": 10, "Pass/Fail": 10,
+        "Compiles": 10, "Pass/Fail": 10, "Fail Reason": 40,
         "Semantic Sim (heuristic)": 15, "Auto-Classification (suggestion)": 22,
         "Manual Classification": 22, "Manual Notes": 30,
     }
