@@ -43,7 +43,7 @@ def emit_llm_call(call: LLMCall) -> None:
     try:
         with langfuse.start_as_current_observation(
             as_type="generation",
-            name=f"bewt-{call.call_type}",
+            name=f"bewt-{call.call_type}-T{call.treatment}" if call.treatment else f"bewt-{call.call_type}",
             model=call.model,
             input=[
                 {"role": "system", "content": call.system_prompt},

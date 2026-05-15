@@ -195,10 +195,11 @@ def run_experiment(
                     else:
                         continue
 
-                    # Add page object context
-                    system, user = build_prompt_with_page_objects(
-                        (system, user), record.page_object_sources
-                    )
+                    # Page Objects only belong to Treatment D per the experimental design
+                    if t == "D":
+                        system, user = build_prompt_with_page_objects(
+                            (system, user), record.page_object_sources
+                        )
 
                     # Call LLM
                     llm_response = None
