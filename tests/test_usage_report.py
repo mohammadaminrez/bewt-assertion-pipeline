@@ -21,6 +21,8 @@ def test_build_treatment_comparison_rows_pivots_treatments():
             "exact_match": 1,
             "semantic_similarity": 0.9,
             "error_category": "correct",
+            "manual_error_category": "correct",
+            "llm_preclassification": "correct",
             "compiles": 1,
             "passes": 1,
         },
@@ -38,6 +40,8 @@ def test_build_treatment_comparison_rows_pivots_treatments():
             "exact_match": 0,
             "semantic_similarity": 0.7,
             "error_category": "under_assertive",
+            "manual_error_category": "wrong_assertion",
+            "llm_preclassification": "under_assertive",
             "compiles": 1,
             "passes": 0,
         },
@@ -47,8 +51,12 @@ def test_build_treatment_comparison_rows_pivots_treatments():
     assert rows[0]["app"] == "mantisbt"
     assert rows[0]["A_input_tokens"] == 100
     assert rows[0]["A_error_category"] == "correct"
+    assert rows[0]["A_manual_error_category"] == "correct"
+    assert rows[0]["A_llm_preclassification"] == "correct"
     assert rows[0]["D_input_tokens"] == 300
     assert rows[0]["D_error_category"] == "under_assertive"
+    assert rows[0]["D_manual_error_category"] == "wrong_assertion"
+    assert rows[0]["D_llm_preclassification"] == "under_assertive"
 
 
 def test_export_treatment_comparison_to_csv(tmp_path):
@@ -62,6 +70,8 @@ def test_export_treatment_comparison_to_csv(tmp_path):
             "treatment": "A",
             "input_tokens": 100,
             "error_category": "correct",
+            "manual_error_category": "correct",
+            "llm_preclassification": "correct",
         }
     ], output)
 
@@ -71,3 +81,5 @@ def test_export_treatment_comparison_to_csv(tmp_path):
     assert df.loc[0, "app"] == "mantisbt"
     assert df.loc[0, "A_input_tokens"] == 100
     assert df.loc[0, "A_error_category"] == "correct"
+    assert df.loc[0, "A_manual_error_category"] == "correct"
+    assert df.loc[0, "A_llm_preclassification"] == "correct"

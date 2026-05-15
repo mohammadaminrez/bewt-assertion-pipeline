@@ -580,6 +580,17 @@ def export_excel(ctx, output, pre_classify, model):
         pre_classifications = pre_classify_results(
             results, llm, on_progress=on_progress, store=store, classifier_model=model_name
         )
+        for key, classification in pre_classifications.items():
+            if not classification:
+                continue
+            app_name, class_name, treatment_name, result_model = key.split("|", 3)
+            store.update_llm_preclassification(
+                app=app_name,
+                class_name=class_name,
+                treatment=treatment_name,
+                model=result_model,
+                llm_preclassification=classification,
+            )
         click.echo(f"Pre-classification complete.")
 
     output_path = Path(output) if output else config.output_dir / "reports" / "manual_evaluation.xlsx"

@@ -53,8 +53,9 @@ def export_results_to_excel(
             "Pass/Fail": "PASS" if r.passes else "FAIL",
             "Fail Reason": r.notes if not r.passes and r.notes and r.notes != "execution skipped" else "",
             "Semantic Sim (heuristic)": round(r.semantic_similarity, 4),
-            "Auto-Classification (suggestion)": r.error_category.value,
-            "Manual Classification": pre_class,
+            "Auto-Classification": r.error_category.value,
+            "LLM Pre-Classification": pre_class,
+            "Manual Classification": "",
             "Manual Notes": "",
         })
 
@@ -130,8 +131,8 @@ def _apply_formatting(ws, num_rows: int) -> None:
         "Treatment": 10, "Model": 15,
         "Gold Standard Assertion": 50, "Generated Assertion": 50,
         "Compiles": 10, "Pass/Fail": 10, "Fail Reason": 40,
-        "Semantic Sim (heuristic)": 15, "Auto-Classification (suggestion)": 22,
-        "Manual Classification": 22, "Manual Notes": 30,
+        "Semantic Sim (heuristic)": 15, "Auto-Classification": 22,
+        "LLM Pre-Classification": 22, "Manual Classification": 22, "Manual Notes": 30,
     }
     for idx, cell in enumerate(ws[1], 1):
         width = col_widths.get(cell.value, 15)
@@ -180,6 +181,7 @@ def import_classifications_from_excel(
             "model": row["Model"],
             "manual_classification": str(manual_class).strip(),
             "manual_notes": str(row.get("Manual Notes", "") or ""),
+            "llm_preclassification": str(row.get("LLM Pre-Classification", "") or ""),
         })
 
     return annotations

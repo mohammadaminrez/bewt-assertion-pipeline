@@ -37,6 +37,9 @@ class ResultStore:
                 passes INTEGER DEFAULT 0,
                 exact_match INTEGER DEFAULT 0,
                 error_category TEXT,
+                manual_error_category TEXT,
+                manual_notes TEXT,
+                llm_preclassification TEXT,
                 semantic_similarity REAL DEFAULT 0.0,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -80,8 +83,22 @@ class ResultStore:
             CREATE INDEX IF NOT EXISTS idx_llm_calls_model ON llm_calls(model);
             CREATE INDEX IF NOT EXISTS idx_llm_calls_prompt_hash ON llm_calls(prompt_hash);
         """)
+        self._ensure_experiment_columns()
         self._ensure_llm_call_columns()
         self.conn.commit()
+
+    def _ensure_experiment_columns(self) -> None:
+        """Add newly introduced experiments columns to existing SQLite databases."""
+        rows = self.conn.execute("PRAGMA table_info(experiments)").fetchall()
+        existing = {row["name"] for row in rows}
+        column_defs = {
+            "manual_error_category": "TEXT",
+            "manual_notes": "TEXT",
+            "llm_preclassification": "TEXT",
+        }
+        for column, definition in column_defs.items():
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE experiments ADD COLUMN {column} {definition}")
 
     def _ensure_llm_call_columns(self) -> None:
         """Add newly introduced llm_calls columns to existing SQLite databases."""
@@ -267,6 +284,8 @@ class ResultStore:
                 e.exact_match,
                 e.semantic_similarity,
                 e.error_category,
+                e.manual_error_category,
+                e.llm_preclassification,
                 e.compiles,
                 e.passes
             FROM experiments e
@@ -318,11 +337,28 @@ class ResultStore:
 
     def update_classification(self, app: str, class_name: str, treatment: str, model: str,
                               error_category: str, notes: str = "") -> bool:
-        """Update the error_category (and optionally notes) from manual annotation."""
+        """Update manual annotation fields without overwriting automatic classification."""
         cursor = self.conn.execute(
-            "UPDATE experiments SET error_category=?, notes=? "
+            "UPDATE experiments SET manual_error_category=?, manual_notes=? "
             "WHERE app=? AND class_name=? AND treatment=? AND model=?",
             (error_category, notes, app, class_name, treatment, model),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def update_llm_preclassification(
+        self,
+        app: str,
+        class_name: str,
+        treatment: str,
+        model: str,
+        llm_preclassification: str,
+    ) -> bool:
+        """Store an LLM pre-classification suggestion separately from final labels."""
+        cursor = self.conn.execute(
+            "UPDATE experiments SET llm_preclassification=? "
+            "WHERE app=? AND class_name=? AND treatment=? AND model=?",
+            (llm_preclassification, app, class_name, treatment, model),
         )
         self.conn.commit()
         return cursor.rowcount > 0

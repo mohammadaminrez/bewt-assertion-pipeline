@@ -25,6 +25,21 @@ def test_get_treatment_comparison_records_joins_results_to_generation_calls(tmp_
         semantic_similarity=0.9,
     )
     experiment_id = store.save_result(result)
+    assert store.update_classification(
+        app="mantisbt",
+        class_name="AddNewProject",
+        treatment="D",
+        model="gpt-4o-mini",
+        error_category="wrong_assertion",
+        notes="manual note",
+    )
+    assert store.update_llm_preclassification(
+        app="mantisbt",
+        class_name="AddNewProject",
+        treatment="D",
+        model="gpt-4o-mini",
+        llm_preclassification="under_assertive",
+    )
     store.save_llm_call(LLMCall(
         experiment_id=experiment_id,
         call_type="generation",
@@ -59,4 +74,7 @@ def test_get_treatment_comparison_records_joins_results_to_generation_calls(tmp_
     assert rows[0]["latency_ms"] == 300
     assert rows[0]["exact_match"] == 1
     assert rows[0]["semantic_similarity"] == 0.9
+    assert rows[0]["error_category"] == "not_executable"
+    assert rows[0]["manual_error_category"] == "wrong_assertion"
+    assert rows[0]["llm_preclassification"] == "under_assertive"
     store.close()

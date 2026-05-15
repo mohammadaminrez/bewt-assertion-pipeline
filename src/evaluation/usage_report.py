@@ -44,6 +44,8 @@ def build_treatment_comparison_rows(records: list[dict]) -> list[dict]:
         row[f"{prefix}exact_match"] = record.get("exact_match")
         row[f"{prefix}semantic_similarity"] = record.get("semantic_similarity")
         row[f"{prefix}error_category"] = record.get("error_category")
+        row[f"{prefix}manual_error_category"] = record.get("manual_error_category")
+        row[f"{prefix}llm_preclassification"] = record.get("llm_preclassification")
         row[f"{prefix}compiles"] = record.get("compiles")
         row[f"{prefix}passes"] = record.get("passes")
 
@@ -63,6 +65,8 @@ def treatment_comparison_columns() -> list[str]:
             f"{prefix}exact_match",
             f"{prefix}semantic_similarity",
             f"{prefix}error_category",
+            f"{prefix}manual_error_category",
+            f"{prefix}llm_preclassification",
             f"{prefix}compiles",
             f"{prefix}passes",
         ])
