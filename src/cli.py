@@ -24,6 +24,7 @@ from .execution.app_setup import run_installer
 from .evaluation.reporter import generate_full_report
 from .evaluation.excel_export import export_results_to_excel, import_classifications_from_excel
 from .evaluation.prompt_export import export_llm_calls
+from .evaluation.usage_report import export_treatment_comparison
 from .data.store import ResultStore
 from .runner import run_experiment, count_experiments
 
@@ -463,6 +464,32 @@ def llm_usage(ctx, group_by, output):
             writer.writeheader()
             writer.writerows(table_rows)
         click.echo(f"Usage summary written to {output_path}")
+
+
+@main.command(name="export-treatment-comparison")
+@click.option("--output", "-o", type=click.Path(), default=None, help="Output .csv or .xlsx path")
+@click.pass_context
+def export_treatment_comparison_cmd(ctx, output):
+    """Export A/B/C/D usage and quality comparison per test/model."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found. Run the experiment first.")
+
+    store = ResultStore(db_path)
+    records = store.get_treatment_comparison_records()
+    store.close()
+
+    if not records:
+        raise click.ClickException("No experiment results found.")
+
+    output_path = Path(output) if output else config.output_dir / "reports" / "treatment_comparison.xlsx"
+    try:
+        export_treatment_comparison(records, output_path)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Exported treatment comparison for {len(records)} treatment rows to {output_path}")
 
 
 @main.command()

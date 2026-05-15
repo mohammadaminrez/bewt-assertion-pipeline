@@ -250,6 +250,33 @@ class ResultStore:
         """).fetchall()
         return [dict(row) for row in rows]
 
+    def get_treatment_comparison_records(self) -> list[dict]:
+        """Get generation usage joined with experiment result quality fields."""
+        rows = self.conn.execute("""
+            SELECT
+                e.app,
+                e.class_name,
+                e.method_name,
+                e.treatment,
+                e.model,
+                c.input_tokens,
+                c.output_tokens,
+                c.total_tokens,
+                c.cost_usd,
+                c.latency_ms,
+                e.exact_match,
+                e.semantic_similarity,
+                e.error_category,
+                e.compiles,
+                e.passes
+            FROM experiments e
+            LEFT JOIN llm_calls c
+                ON c.experiment_id = e.id
+                AND c.call_type = 'generation'
+            ORDER BY e.app, e.class_name, e.method_name, e.model, e.treatment
+        """).fetchall()
+        return [dict(row) for row in rows]
+
     def load_experiment_results(self) -> list[ExperimentResult]:
         """Reconstruct ExperimentResult objects from stored DB rows."""
         rows = self.get_all_results()
