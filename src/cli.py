@@ -288,6 +288,71 @@ def report(ctx):
     store.close()
 
 
+def _format_optional(value, suffix: str = "") -> str:
+    if value is None:
+        return "n/a"
+    return f"{value}{suffix}"
+
+
+@main.command(name="show-prompt")
+@click.option("--app", "-a", default=None, help="Filter by app")
+@click.option("--class", "class_name", default=None, help="Filter by test class")
+@click.option("--treatment", "-t", type=TreatmentType(), default=None, help="Filter by treatment")
+@click.option("--model", "-m", default=None, help="Filter by model")
+@click.option("--call-type", default="generation", help="LLM call type (default: generation)")
+@click.option("--latest", is_flag=True, default=False, help="Show the latest matching call")
+@click.pass_context
+def show_prompt(ctx, app, class_name, treatment, model, call_type, latest):
+    """Show the exact prompt and response for one logged LLM call."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found. Run the experiment first.")
+
+    store = ResultStore(db_path)
+    calls = store.get_llm_calls(
+        call_type=call_type,
+        app=app,
+        class_name=class_name,
+        treatment=treatment,
+        model=model,
+    )
+    store.close()
+
+    if not calls:
+        raise click.ClickException("No matching LLM calls found.")
+    if len(calls) > 1 and not latest:
+        raise click.ClickException(
+            f"Found {len(calls)} matching calls. Add more filters or pass --latest."
+        )
+
+    call = calls[-1] if latest else calls[0]
+    click.echo(f"Call ID: {call['id']}")
+    click.echo(f"Type: {call['call_type']}")
+    click.echo(f"App: {call['app']}")
+    click.echo(f"Class: {call['class_name']}")
+    click.echo(f"Method: {call['method_name']}")
+    click.echo(f"Treatment: {call['treatment']}")
+    click.echo(f"Model: {call['model']}")
+    click.echo(f"Provider: {call['provider'] or 'n/a'}")
+    click.echo(f"Prompt hash: {call['prompt_hash']}")
+    click.echo(f"Input tokens: {_format_optional(call['input_tokens'])}")
+    click.echo(f"Output tokens: {_format_optional(call['output_tokens'])}")
+    click.echo(f"Total tokens: {_format_optional(call['total_tokens'])}")
+    click.echo(f"Cached input tokens: {_format_optional(call['cached_input_tokens'])}")
+    click.echo(f"Cache creation input tokens: {_format_optional(call['cache_creation_input_tokens'])}")
+    click.echo(f"Cache read input tokens: {_format_optional(call['cache_read_input_tokens'])}")
+    click.echo(f"Reasoning tokens: {_format_optional(call['reasoning_tokens'])}")
+    click.echo(f"Cost USD: {_format_optional(call['cost_usd'])}")
+    click.echo(f"Latency: {_format_optional(call['latency_ms'], ' ms')}")
+    click.echo("\n--- SYSTEM PROMPT ---")
+    click.echo(call["system_prompt"] or "")
+    click.echo("\n--- USER PROMPT ---")
+    click.echo(call["user_prompt"] or "")
+    click.echo("\n--- RAW RESPONSE ---")
+    click.echo(call["raw_response"] or "")
+
+
 @main.command()
 @click.option("--app", "-a", required=True, help="App to set up")
 @click.pass_context
