@@ -207,8 +207,9 @@ def capture_html(ctx, app):
 @click.option("--model", "-m", multiple=True, help="Model(s) to use")
 @click.option("--treatment", "-t", multiple=True, type=TreatmentType(), help="Treatment(s): A, B, C")
 @click.option("--execute", is_flag=True, default=False, help="Compile and run assertions against live apps (requires Maven + Docker)")
+@click.option("--limit", "-n", type=int, default=None, help="Limit number of tests per app (default: all)")
 @click.pass_context
-def run(ctx, app, model, treatment, execute):
+def run(ctx, app, model, treatment, execute, limit):
     """Run the full experiment pipeline."""
     config = ctx.obj["config"]
     _validate_bewt_repo(config)
@@ -225,7 +226,7 @@ def run(ctx, app, model, treatment, execute):
         if warnings and not click.confirm("Continue anyway?"):
             return
 
-    total = count_experiments(config, apps, models, treatments)
+    total = count_experiments(config, apps, models, treatments, limit=limit)
 
     def on_progress(completed, total_exp, t, class_name, message):
         progress = f"[{completed}/{total_exp}]"
@@ -254,7 +255,7 @@ def run(ctx, app, model, treatment, execute):
 
     results = run_experiment(
         config, apps=apps, models=models, treatments=treatments,
-        execute=execute, on_progress=on_progress,
+        execute=execute, on_progress=on_progress, limit=limit,
     )
 
     store = ResultStore(config.output_dir / "results.db")

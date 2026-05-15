@@ -68,7 +68,13 @@ def _save_and_emit_llm_call(store: ResultStore, call: LLMCall) -> int:
     return call_id
 
 
-def count_experiments(config: Config, apps: list[str], models: list[str], treatments: tuple[str, ...]) -> int:
+def count_experiments(
+    config: Config,
+    apps: list[str],
+    models: list[str],
+    treatments: tuple[str, ...],
+    limit: int | None = None,
+) -> int:
     """Count the total number of experiments that will be run."""
     total = 0
     for _ in models:
@@ -77,6 +83,8 @@ def count_experiments(config: Config, apps: list[str], models: list[str], treatm
             if test_dir.exists():
                 n_tests = len([f for f in test_dir.glob("*.java")
                                if f.stem not in ("BaseTest", "TestSuite", "Installer")])
+                if limit is not None:
+                    n_tests = min(n_tests, limit)
                 total += n_tests * len(treatments)
     return total
 
@@ -88,6 +96,7 @@ def run_experiment(
     treatments: tuple[str, ...] = ("A", "B", "C"),
     execute: bool = False,
     on_progress: ProgressCallback | None = None,
+    limit: int | None = None,
 ) -> list[ExperimentResult]:
     """Run the full experiment pipeline.
 
@@ -105,7 +114,7 @@ def run_experiment(
     apps = apps or list(config.apps.keys())
     models = models or [config.default_model]
 
-    total = count_experiments(config, apps, models, treatments)
+    total = count_experiments(config, apps, models, treatments, limit=limit)
     store = ResultStore(config.output_dir / "results.db")
     all_results = []
     completed = 0
@@ -135,6 +144,8 @@ def run_experiment(
             constants = resolve_strings_constants(strings_path)
             strings_source = strings_path.read_text() if strings_path.exists() else ""
             records = parse_all_tests(test_dir, app_name, app_config["variant"], version, constants)
+            if limit is not None:
+                records = sorted(records, key=lambda r: r.class_name)[:limit]
 
             # Parse gherkin
             gherkin_dir = config.get_gherkin_path(app_name)
