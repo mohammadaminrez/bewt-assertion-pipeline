@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import csv
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -389,6 +390,79 @@ def export_prompts(ctx, output, app, class_name, treatment, model, call_type):
         raise click.ClickException(str(e))
 
     click.echo(f"Exported {len(calls)} LLM calls to {output_path}")
+
+
+@main.command(name="llm-usage")
+@click.option(
+    "--by",
+    "group_by",
+    type=click.Choice(["none", "treatment", "model", "app", "call_type"]),
+    default="none",
+    help="Group usage summary",
+)
+@click.option("--output", "-o", type=click.Path(), default=None, help="Optional CSV output path")
+@click.pass_context
+def llm_usage(ctx, group_by, output):
+    """Show token, cost, and latency summary for logged LLM calls."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found. Run the experiment first.")
+
+    summary_group = None if group_by == "none" else group_by
+    store = ResultStore(db_path)
+    rows = store.get_llm_usage_summary(summary_group)
+    store.close()
+
+    if not rows:
+        raise click.ClickException("No LLM calls found.")
+
+    headers = [
+        "group",
+        "calls",
+        "input",
+        "output",
+        "total",
+        "cached",
+        "cache_write",
+        "cache_read",
+        "reasoning",
+        "cost_usd",
+        "avg_latency_ms",
+    ]
+    table_rows = []
+    for row in rows:
+        table_rows.append({
+            "group": row["group_key"],
+            "calls": row["calls"],
+            "input": row["input_tokens"],
+            "output": row["output_tokens"],
+            "total": row["total_tokens"],
+            "cached": row["cached_input_tokens"],
+            "cache_write": row["cache_creation_input_tokens"],
+            "cache_read": row["cache_read_input_tokens"],
+            "reasoning": row["reasoning_tokens"],
+            "cost_usd": row["cost_usd"] or 0,
+            "avg_latency_ms": round(row["avg_latency_ms"] or 0, 2),
+        })
+
+    widths = {
+        header: max(len(header), *(len(str(row[header])) for row in table_rows))
+        for header in headers
+    }
+    click.echo("  ".join(header.ljust(widths[header]) for header in headers))
+    click.echo("  ".join("-" * widths[header] for header in headers))
+    for row in table_rows:
+        click.echo("  ".join(str(row[header]).ljust(widths[header]) for header in headers))
+
+    if output:
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            writer.writerows(table_rows)
+        click.echo(f"Usage summary written to {output_path}")
 
 
 @main.command()

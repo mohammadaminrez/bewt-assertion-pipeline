@@ -223,6 +223,33 @@ class ResultStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_llm_usage_summary(self, group_by: str | None = None) -> list[dict]:
+        """Summarize token/cost usage for logged LLM calls."""
+        allowed = {None, "treatment", "model", "app", "call_type"}
+        if group_by not in allowed:
+            raise ValueError(f"group_by must be one of: {', '.join(sorted(v for v in allowed if v))}")
+
+        group_select = f"{group_by} AS group_key, " if group_by else "'total' AS group_key, "
+        group_clause = f" GROUP BY {group_by}" if group_by else ""
+        rows = self.conn.execute(f"""
+            SELECT
+                {group_select}
+                COUNT(*) AS calls,
+                COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+                COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens,
+                COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
+                COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                SUM(cost_usd) AS cost_usd,
+                AVG(latency_ms) AS avg_latency_ms
+            FROM llm_calls
+            {group_clause}
+            ORDER BY group_key
+        """).fetchall()
+        return [dict(row) for row in rows]
+
     def load_experiment_results(self) -> list[ExperimentResult]:
         """Reconstruct ExperimentResult objects from stored DB rows."""
         rows = self.get_all_results()
