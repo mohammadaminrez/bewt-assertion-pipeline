@@ -15,6 +15,7 @@ from .llm.prompt_builder import (
     build_prompt_a, build_prompt_b, build_prompt_c, build_prompt_d,
     build_prompt_with_page_objects,
 )
+from .llm.types import LLMCall, LLMResponse
 from .llm.response_parser import extract_assertion_from_response, validate_assertion
 from .execution.java_injector import prepare_project_copy
 from .execution.test_runner import compile_project, run_single_test
@@ -24,6 +25,39 @@ from .data.store import ResultStore
 
 # on_progress(completed, total, treatment, class_name, message)
 ProgressCallback = Callable[[int, int, str, str, str], None]
+
+
+def _build_generation_call(
+    record,
+    treatment: str,
+    model_name: str,
+    system: str,
+    user: str,
+    response: LLMResponse,
+    experiment_id: int | None = None,
+) -> LLMCall:
+    return LLMCall(
+        experiment_id=experiment_id,
+        call_type="generation",
+        app=record.app,
+        class_name=record.class_name,
+        method_name=record.method_name,
+        treatment=treatment,
+        model=model_name,
+        provider=response.provider,
+        system_prompt=system,
+        user_prompt=user,
+        raw_response=response.text,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        total_tokens=response.total_tokens,
+        cached_input_tokens=response.cached_input_tokens,
+        cache_creation_input_tokens=response.cache_creation_input_tokens,
+        cache_read_input_tokens=response.cache_read_input_tokens,
+        reasoning_tokens=response.reasoning_tokens,
+        cost_usd=response.cost_usd,
+        latency_ms=response.latency_ms,
+    )
 
 
 def count_experiments(config: Config, apps: list[str], models: list[str], treatments: tuple[str, ...]) -> int:
@@ -148,10 +182,16 @@ def run_experiment(
                     )
 
                     # Call LLM
+                    llm_response = None
                     try:
                         llm_response = llm.generate(system, user)
                         raw_response = llm_response.text
                     except Exception as e:
+                        error_response = LLMResponse(
+                            text=str(e),
+                            provider="",
+                            model=model_name,
+                        )
                         result = ExperimentResult(
                             test_record=record, treatment=t, model=model_name,
                             prompt=user, raw_response=str(e),
@@ -159,7 +199,10 @@ def run_experiment(
                             error_category=ErrorCategory.NOT_EXECUTABLE,
                             notes=f"LLM error: {e}",
                         )
-                        store.save_result(result)
+                        experiment_id = store.save_result(result)
+                        store.save_llm_call(_build_generation_call(
+                            record, t, model_name, system, user, error_response, experiment_id
+                        ))
                         all_results.append(result)
                         _progress(t, record.class_name, f"error:{e}")
                         continue
@@ -213,7 +256,10 @@ def run_experiment(
                         _progress(t, record.class_name,
                                   f"{status}:sim={result.semantic_similarity:.2f},cat={result.error_category.value}")
 
-                    store.save_result(result)
+                    experiment_id = store.save_result(result)
+                    store.save_llm_call(_build_generation_call(
+                        record, t, model_name, system, user, llm_response, experiment_id
+                    ))
                     all_results.append(result)
 
     # Generate reports
