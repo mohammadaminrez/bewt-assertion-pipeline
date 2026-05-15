@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import Protocol
 
 from ..config import Config
+from .types import LLMResponse
 
 
 class LLMClient(Protocol):
-    def generate(self, system: str, user: str) -> str: ...
+    def generate(self, system: str, user: str) -> LLMResponse: ...
 
 
 class OpenAIClient:
@@ -24,7 +25,8 @@ class OpenAIClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str) -> LLMResponse:
+        started = time.perf_counter()
         response = self.client.chat.completions.create(
             model=self.model_id,
             messages=[
@@ -34,7 +36,12 @@ class OpenAIClient:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
-        return response.choices[0].message.content
+        return LLMResponse(
+            text=response.choices[0].message.content or "",
+            provider="openai",
+            model=self.model_id,
+            latency_ms=round((time.perf_counter() - started) * 1000),
+        )
 
 
 class AnthropicClient:
@@ -45,7 +52,8 @@ class AnthropicClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str) -> LLMResponse:
+        started = time.perf_counter()
         response = self.client.messages.create(
             model=self.model_id,
             system=system,
@@ -53,7 +61,12 @@ class AnthropicClient:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
-        return response.content[0].text
+        return LLMResponse(
+            text=response.content[0].text,
+            provider="anthropic",
+            model=self.model_id,
+            latency_ms=round((time.perf_counter() - started) * 1000),
+        )
 
 
 class CachedClient:
@@ -64,19 +77,22 @@ class CachedClient:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str) -> LLMResponse:
         key = hashlib.sha256(f"{system}|||{user}".encode()).hexdigest()
         cache_file = self.cache_dir / f"{key}.json"
 
         if cache_file.exists():
             data = json.loads(cache_file.read_text())
-            return data["response"]
+            cached = data.get("response", "")
+            if isinstance(cached, dict):
+                return LLMResponse.from_dict(cached)
+            return LLMResponse(text=cached, provider="", model="")
 
         response = self.client.generate(system, user)
         cache_file.write_text(json.dumps({
             "system": system,
             "user": user,
-            "response": response,
+            "response": response.to_dict(),
         }, indent=2))
         return response
 
@@ -89,7 +105,7 @@ class RetryClient:
         self.max_retries = max_retries
         self.delay = delay
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str) -> LLMResponse:
         last_error = None
         for attempt in range(self.max_retries):
             try:

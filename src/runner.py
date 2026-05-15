@@ -149,7 +149,8 @@ def run_experiment(
 
                     # Call LLM
                     try:
-                        raw_response = llm.generate(system, user)
+                        llm_response = llm.generate(system, user)
+                        raw_response = llm_response.text
                     except Exception as e:
                         result = ExperimentResult(
                             test_record=record, treatment=t, model=model_name,

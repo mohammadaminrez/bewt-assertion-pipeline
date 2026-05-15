@@ -68,7 +68,7 @@ def pre_classify_results(
 
         try:
             response = llm.generate(CLASSIFIER_SYSTEM, user_msg)
-            parsed = _parse_classification(response)
+            parsed = _parse_classification(response.text)
             classifications[key] = parsed
             if on_progress:
                 on_progress(i + 1, total, f"{r.test_record.class_name} [{r.treatment}]: {parsed}")
