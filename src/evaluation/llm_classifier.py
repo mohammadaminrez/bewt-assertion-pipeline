@@ -7,6 +7,8 @@ from typing import Callable
 
 from ..models import ExperimentResult
 from ..llm.client import LLMClient
+from ..llm.types import LLMCall, LLMResponse
+from ..data.store import ResultStore
 
 CLASSIFIER_SYSTEM = """You are an expert in Selenium test evaluation. You will be given a gold-standard assertion and a generated assertion from a Selenium test.
 
@@ -42,6 +44,8 @@ def pre_classify_results(
     results: list[ExperimentResult],
     llm: LLMClient,
     on_progress: ProgressCallback | None = None,
+    store: ResultStore | None = None,
+    classifier_model: str | None = None,
 ) -> dict[str, str]:
     """Pre-classify all results using an LLM.
 
@@ -70,14 +74,56 @@ def pre_classify_results(
             response = llm.generate(CLASSIFIER_SYSTEM, user_msg)
             parsed = _parse_classification(response.text)
             classifications[key] = parsed
+            if store:
+                store.save_llm_call(_build_pre_classification_call(
+                    r, classifier_model or response.model, user_msg, response
+                ))
             if on_progress:
                 on_progress(i + 1, total, f"{r.test_record.class_name} [{r.treatment}]: {parsed}")
         except Exception as e:
             classifications[key] = ""
+            if store:
+                error_response = LLMResponse(
+                    text=str(e),
+                    provider="",
+                    model=classifier_model or r.model,
+                )
+                store.save_llm_call(_build_pre_classification_call(
+                    r, classifier_model or r.model, user_msg, error_response
+                ))
             if on_progress:
                 on_progress(i + 1, total, f"{r.test_record.class_name}: error ({e})")
 
     return classifications
+
+
+def _build_pre_classification_call(
+    result: ExperimentResult,
+    classifier_model: str,
+    user_msg: str,
+    response: LLMResponse,
+) -> LLMCall:
+    return LLMCall(
+        call_type="pre_classification",
+        app=result.test_record.app,
+        class_name=result.test_record.class_name,
+        method_name=result.test_record.method_name,
+        treatment=result.treatment,
+        model=classifier_model,
+        provider=response.provider,
+        system_prompt=CLASSIFIER_SYSTEM,
+        user_prompt=user_msg,
+        raw_response=response.text,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        total_tokens=response.total_tokens,
+        cached_input_tokens=response.cached_input_tokens,
+        cache_creation_input_tokens=response.cache_creation_input_tokens,
+        cache_read_input_tokens=response.cache_read_input_tokens,
+        reasoning_tokens=response.reasoning_tokens,
+        cost_usd=response.cost_usd,
+        latency_ms=response.latency_ms,
+    )
 
 
 def _parse_classification(response: str) -> str:

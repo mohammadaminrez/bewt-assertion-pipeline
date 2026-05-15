@@ -373,7 +373,9 @@ def export_excel(ctx, output, pre_classify, model):
         def on_progress(completed, total, message):
             click.echo(f"  [{completed}/{total}] {message}")
 
-        pre_classifications = pre_classify_results(results, llm, on_progress=on_progress)
+        pre_classifications = pre_classify_results(
+            results, llm, on_progress=on_progress, store=store, classifier_model=model_name
+        )
         click.echo(f"Pre-classification complete.")
 
     output_path = Path(output) if output else config.output_dir / "reports" / "manual_evaluation.xlsx"
