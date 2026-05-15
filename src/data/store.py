@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from ..models import AssertionRecord, AssertionType, ExperimentResult, ErrorCategory, TestRecord
+from ..llm.types import LLMCall
 
 
 class ResultStore:
@@ -45,6 +46,37 @@ class ResultStore:
             CREATE INDEX IF NOT EXISTS idx_experiments_app ON experiments(app);
             CREATE INDEX IF NOT EXISTS idx_experiments_treatment ON experiments(treatment);
             CREATE INDEX IF NOT EXISTS idx_experiments_model ON experiments(model);
+
+            CREATE TABLE IF NOT EXISTS llm_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                experiment_id INTEGER,
+                call_type TEXT NOT NULL,
+                app TEXT NOT NULL,
+                class_name TEXT NOT NULL,
+                method_name TEXT NOT NULL,
+                treatment TEXT NOT NULL,
+                model TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                user_prompt TEXT NOT NULL,
+                prompt_hash TEXT NOT NULL,
+                raw_response TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                cached_input_tokens INTEGER,
+                reasoning_tokens INTEGER,
+                cost_usd REAL,
+                latency_ms INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(experiment_id) REFERENCES experiments(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_experiment_id ON llm_calls(experiment_id);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_call_type ON llm_calls(call_type);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_treatment ON llm_calls(treatment);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_model ON llm_calls(model);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_prompt_hash ON llm_calls(prompt_hash);
         """)
         self.conn.commit()
 
@@ -126,6 +158,53 @@ class ResultStore:
                 for row in by_model
             },
         }
+
+    def save_llm_call(self, call: LLMCall) -> int:
+        """Save one auditable LLM call trace."""
+        data = call.to_dict()
+        cursor = self.conn.execute("""
+            INSERT INTO llm_calls
+            (experiment_id, call_type, app, class_name, method_name, treatment, model, provider,
+             system_prompt, user_prompt, prompt_hash, raw_response,
+             input_tokens, output_tokens, total_tokens, cached_input_tokens,
+             reasoning_tokens, cost_usd, latency_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            data["experiment_id"], data["call_type"], data["app"], data["class_name"],
+            data["method_name"], data["treatment"], data["model"], data["provider"],
+            data["system_prompt"], data["user_prompt"], data["prompt_hash"], data["raw_response"],
+            data["input_tokens"], data["output_tokens"], data["total_tokens"],
+            data["cached_input_tokens"], data["reasoning_tokens"], data["cost_usd"],
+            data["latency_ms"],
+        ))
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def get_llm_calls(
+        self,
+        *,
+        call_type: str | None = None,
+        app: str | None = None,
+        class_name: str | None = None,
+        treatment: str | None = None,
+        model: str | None = None,
+    ) -> list[dict]:
+        """Get LLM call traces, optionally filtered by research metadata."""
+        filters = {
+            "call_type": call_type,
+            "app": app,
+            "class_name": class_name,
+            "treatment": treatment,
+            "model": model,
+        }
+        clauses = [f"{key} = ?" for key, value in filters.items() if value is not None]
+        values = [value for value in filters.values() if value is not None]
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT * FROM llm_calls{where} ORDER BY id",
+            values,
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def load_experiment_results(self) -> list[ExperimentResult]:
         """Reconstruct ExperimentResult objects from stored DB rows."""
