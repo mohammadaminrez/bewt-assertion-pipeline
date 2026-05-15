@@ -16,6 +16,7 @@ from .llm.prompt_builder import (
     build_prompt_with_page_objects,
 )
 from .llm.types import LLMCall, LLMResponse
+from .llm.observability import emit_llm_call, flush_observability
 from .llm.response_parser import extract_assertion_from_response, validate_assertion
 from .execution.java_injector import prepare_project_copy
 from .execution.test_runner import compile_project, run_single_test
@@ -58,6 +59,13 @@ def _build_generation_call(
         cost_usd=response.cost_usd,
         latency_ms=response.latency_ms,
     )
+
+
+def _save_and_emit_llm_call(store: ResultStore, call: LLMCall) -> int:
+    call_id = store.save_llm_call(call)
+    call.id = call_id
+    emit_llm_call(call)
+    return call_id
 
 
 def count_experiments(config: Config, apps: list[str], models: list[str], treatments: tuple[str, ...]) -> int:
@@ -200,7 +208,7 @@ def run_experiment(
                             notes=f"LLM error: {e}",
                         )
                         experiment_id = store.save_result(result)
-                        store.save_llm_call(_build_generation_call(
+                        _save_and_emit_llm_call(store, _build_generation_call(
                             record, t, model_name, system, user, error_response, experiment_id
                         ))
                         all_results.append(result)
@@ -257,7 +265,7 @@ def run_experiment(
                                   f"{status}:sim={result.semantic_similarity:.2f},cat={result.error_category.value}")
 
                     experiment_id = store.save_result(result)
-                    store.save_llm_call(_build_generation_call(
+                    _save_and_emit_llm_call(store, _build_generation_call(
                         record, t, model_name, system, user, llm_response, experiment_id
                     ))
                     all_results.append(result)
@@ -267,4 +275,5 @@ def run_experiment(
         generate_full_report(all_results, config.output_dir / "reports")
 
     store.close()
+    flush_observability()
     return all_results

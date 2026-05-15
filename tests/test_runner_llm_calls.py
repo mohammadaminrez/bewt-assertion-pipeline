@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from src.llm.types import LLMResponse
 from src.models import TestRecord
-from src.runner import _build_generation_call
+from src.runner import _build_generation_call, _save_and_emit_llm_call
 
 
 def test_build_generation_call_copies_prompt_response_and_usage_metadata():
@@ -59,3 +59,34 @@ def test_build_generation_call_copies_prompt_response_and_usage_metadata():
     assert call.reasoning_tokens == 5
     assert call.cost_usd == 0.0012
     assert call.latency_ms == 345
+
+
+def test_save_and_emit_llm_call_sets_local_call_id(tmp_path, monkeypatch):
+    from src.data.store import ResultStore
+
+    emitted = []
+    monkeypatch.setattr("src.runner.emit_llm_call", emitted.append)
+    store = ResultStore(tmp_path / "results.db")
+    call = _build_generation_call(
+        record=TestRecord(
+            app="mantisbt",
+            variant="v1",
+            version="1.0",
+            file_path="AddNewProject.java",
+            class_name="AddNewProject",
+            method_name="addNewProject",
+        ),
+        treatment="D",
+        model_name="gpt-4o-mini",
+        system="system prompt",
+        user="user prompt",
+        response=LLMResponse(text="raw", provider="openai", model="gpt-4o-mini"),
+        experiment_id=42,
+    )
+
+    call_id = _save_and_emit_llm_call(store, call)
+
+    assert call_id == 1
+    assert emitted == [call]
+    assert emitted[0].id == 1
+    store.close()

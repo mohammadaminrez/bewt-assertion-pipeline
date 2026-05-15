@@ -8,6 +8,7 @@ from typing import Callable
 from ..models import ExperimentResult
 from ..llm.client import LLMClient
 from ..llm.types import LLMCall, LLMResponse
+from ..llm.observability import emit_llm_call, flush_observability
 from ..data.store import ResultStore
 
 CLASSIFIER_SYSTEM = """You are an expert in Selenium test evaluation. You will be given a gold-standard assertion and a generated assertion from a Selenium test.
@@ -75,7 +76,7 @@ def pre_classify_results(
             parsed = _parse_classification(response.text)
             classifications[key] = parsed
             if store:
-                store.save_llm_call(_build_pre_classification_call(
+                _save_and_emit_llm_call(store, _build_pre_classification_call(
                     r, classifier_model or response.model, user_msg, response
                 ))
             if on_progress:
@@ -88,13 +89,21 @@ def pre_classify_results(
                     provider="",
                     model=classifier_model or r.model,
                 )
-                store.save_llm_call(_build_pre_classification_call(
+                _save_and_emit_llm_call(store, _build_pre_classification_call(
                     r, classifier_model or r.model, user_msg, error_response
                 ))
             if on_progress:
                 on_progress(i + 1, total, f"{r.test_record.class_name}: error ({e})")
 
+    flush_observability()
     return classifications
+
+
+def _save_and_emit_llm_call(store: ResultStore, call: LLMCall) -> int:
+    call_id = store.save_llm_call(call)
+    call.id = call_id
+    emit_llm_call(call)
+    return call_id
 
 
 def _build_pre_classification_call(

@@ -20,7 +20,12 @@ class FakeClassifierClient:
         )
 
 
-def test_pre_classify_results_logs_pre_classification_call(tmp_path):
+def test_pre_classify_results_logs_pre_classification_call(tmp_path, monkeypatch):
+    import src.evaluation.llm_classifier as llm_classifier
+
+    emitted = []
+    monkeypatch.setattr(llm_classifier, "emit_llm_call", emitted.append)
+    monkeypatch.setattr(llm_classifier, "flush_observability", lambda: None)
     store = ResultStore(tmp_path / "results.db")
     result = ExperimentResult(
         test_record=TestRecord(
@@ -62,4 +67,7 @@ def test_pre_classify_results_logs_pre_classification_call(tmp_path):
     assert calls[0]["total_tokens"] == 120
     assert calls[0]["cost_usd"] == 0.0012
     assert calls[0]["latency_ms"] == 345
+    assert len(emitted) == 1
+    assert emitted[0].id == calls[0]["id"]
+    assert emitted[0].call_type == "pre_classification"
     store.close()
