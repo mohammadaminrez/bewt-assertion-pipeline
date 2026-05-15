@@ -30,6 +30,8 @@ def test_result_store_creates_llm_calls_table(tmp_path):
         "output_tokens",
         "total_tokens",
         "cached_input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
         "reasoning_tokens",
         "cost_usd",
         "latency_ms",
@@ -55,6 +57,8 @@ def test_save_and_filter_llm_call(tmp_path):
         output_tokens=20,
         total_tokens=120,
         cached_input_tokens=10,
+        cache_creation_input_tokens=3,
+        cache_read_input_tokens=7,
         reasoning_tokens=5,
         cost_usd=0.0012,
         latency_ms=345,
@@ -77,6 +81,8 @@ def test_save_and_filter_llm_call(tmp_path):
     assert rows[0]["output_tokens"] == 20
     assert rows[0]["total_tokens"] == 120
     assert rows[0]["cached_input_tokens"] == 10
+    assert rows[0]["cache_creation_input_tokens"] == 3
+    assert rows[0]["cache_read_input_tokens"] == 7
     assert rows[0]["reasoning_tokens"] == 5
     assert rows[0]["cost_usd"] == 0.0012
     assert rows[0]["latency_ms"] == 345

@@ -65,6 +65,8 @@ class ResultStore:
                 output_tokens INTEGER,
                 total_tokens INTEGER,
                 cached_input_tokens INTEGER,
+                cache_creation_input_tokens INTEGER,
+                cache_read_input_tokens INTEGER,
                 reasoning_tokens INTEGER,
                 cost_usd REAL,
                 latency_ms INTEGER,
@@ -78,7 +80,20 @@ class ResultStore:
             CREATE INDEX IF NOT EXISTS idx_llm_calls_model ON llm_calls(model);
             CREATE INDEX IF NOT EXISTS idx_llm_calls_prompt_hash ON llm_calls(prompt_hash);
         """)
+        self._ensure_llm_call_columns()
         self.conn.commit()
+
+    def _ensure_llm_call_columns(self) -> None:
+        """Add newly introduced llm_calls columns to existing SQLite databases."""
+        rows = self.conn.execute("PRAGMA table_info(llm_calls)").fetchall()
+        existing = {row["name"] for row in rows}
+        column_defs = {
+            "cache_creation_input_tokens": "INTEGER",
+            "cache_read_input_tokens": "INTEGER",
+        }
+        for column, definition in column_defs.items():
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE llm_calls ADD COLUMN {column} {definition}")
 
     def save_result(self, result: ExperimentResult) -> int:
         """Save an experiment result. Updates if already exists."""
@@ -167,14 +182,16 @@ class ResultStore:
             (experiment_id, call_type, app, class_name, method_name, treatment, model, provider,
              system_prompt, user_prompt, prompt_hash, raw_response,
              input_tokens, output_tokens, total_tokens, cached_input_tokens,
+             cache_creation_input_tokens, cache_read_input_tokens,
              reasoning_tokens, cost_usd, latency_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["experiment_id"], data["call_type"], data["app"], data["class_name"],
             data["method_name"], data["treatment"], data["model"], data["provider"],
             data["system_prompt"], data["user_prompt"], data["prompt_hash"], data["raw_response"],
             data["input_tokens"], data["output_tokens"], data["total_tokens"],
-            data["cached_input_tokens"], data["reasoning_tokens"], data["cost_usd"],
+            data["cached_input_tokens"], data["cache_creation_input_tokens"],
+            data["cache_read_input_tokens"], data["reasoning_tokens"], data["cost_usd"],
             data["latency_ms"],
         ))
         self.conn.commit()

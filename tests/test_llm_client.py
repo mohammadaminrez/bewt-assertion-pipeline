@@ -94,7 +94,7 @@ def test_openai_client_maps_usage_metadata():
     )
     client = OpenAIClient.__new__(OpenAIClient)
     client.client = sdk_client
-    client.model_id = "gpt-test"
+    client.model_id = "gpt-4o-mini"
     client.temperature = 0
     client.max_tokens = 100
 
@@ -102,12 +102,13 @@ def test_openai_client_maps_usage_metadata():
 
     assert response.text == "assertTrue(ok);"
     assert response.provider == "openai"
-    assert response.model == "gpt-test"
+    assert response.model == "gpt-4o-mini"
     assert response.input_tokens == 11
     assert response.output_tokens == 13
     assert response.total_tokens == 24
     assert response.cached_input_tokens == 5
     assert response.reasoning_tokens == 3
+    assert response.cost_usd == 0.000009075
     assert response.latency_ms is not None
 
 
@@ -127,7 +128,7 @@ def test_anthropic_client_maps_usage_metadata():
     )
     client = AnthropicClient.__new__(AnthropicClient)
     client.client = sdk_client
-    client.model_id = "claude-test"
+    client.model_id = "claude-sonnet-4-20250514"
     client.temperature = 0
     client.max_tokens = 100
 
@@ -135,11 +136,14 @@ def test_anthropic_client_maps_usage_metadata():
 
     assert response.text == "assertTrue(ok);"
     assert response.provider == "anthropic"
-    assert response.model == "claude-test"
+    assert response.model == "claude-sonnet-4-20250514"
     assert response.input_tokens == 17
     assert response.output_tokens == 19
-    assert response.total_tokens == 36
-    assert response.cached_input_tokens == 9
+    assert response.total_tokens == 45
+    assert response.cached_input_tokens == 7
+    assert response.cache_creation_input_tokens == 2
+    assert response.cache_read_input_tokens == 7
+    assert response.cost_usd == 0.0003456
     assert response.latency_ms is not None
 
 
@@ -158,7 +162,7 @@ def test_gemini_client_maps_usage_metadata():
     )
     client = GeminiClient.__new__(GeminiClient)
     client.client = sdk_client
-    client.model_id = "gemini-test"
+    client.model_id = "gemini-2.5-flash"
     client.temperature = 0
     client.max_tokens = 100
 
@@ -166,10 +170,11 @@ def test_gemini_client_maps_usage_metadata():
 
     assert response.text == "assertTrue(ok);"
     assert response.provider == "gemini"
-    assert response.model == "gemini-test"
+    assert response.model == "gemini-2.5-flash"
     assert response.input_tokens == 23
     assert response.output_tokens == 29
     assert response.total_tokens == 52
     assert response.cached_input_tokens == 4
     assert response.reasoning_tokens == 6
+    assert response.cost_usd == 0.00007832
     assert response.latency_ms is not None

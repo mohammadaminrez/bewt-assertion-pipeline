@@ -17,6 +17,8 @@ class LLMResponse:
     output_tokens: int | None = None
     total_tokens: int | None = None
     cached_input_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
     reasoning_tokens: int | None = None
     cost_usd: float | None = None
     latency_ms: int | None = None
@@ -34,6 +36,8 @@ class LLMResponse:
             output_tokens=data.get("output_tokens"),
             total_tokens=data.get("total_tokens"),
             cached_input_tokens=data.get("cached_input_tokens"),
+            cache_creation_input_tokens=data.get("cache_creation_input_tokens"),
+            cache_read_input_tokens=data.get("cache_read_input_tokens"),
             reasoning_tokens=data.get("reasoning_tokens"),
             cost_usd=data.get("cost_usd"),
             latency_ms=data.get("latency_ms"),
@@ -60,6 +64,8 @@ class LLMCall:
     output_tokens: int | None = None
     total_tokens: int | None = None
     cached_input_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
     reasoning_tokens: int | None = None
     cost_usd: float | None = None
     latency_ms: int | None = None

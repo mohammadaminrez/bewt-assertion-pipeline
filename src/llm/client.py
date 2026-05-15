@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ..config import Config
+from .pricing import with_cost
 from .types import LLMResponse
 
 
@@ -53,7 +54,7 @@ class OpenAIClient:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
-        return LLMResponse(
+        return with_cost(LLMResponse(
             text=response.choices[0].message.content or "",
             provider="openai",
             model=self.model_id,
@@ -63,7 +64,7 @@ class OpenAIClient:
             cached_input_tokens=_getattr_path(response, "usage", "prompt_tokens_details", "cached_tokens"),
             reasoning_tokens=_getattr_path(response, "usage", "completion_tokens_details", "reasoning_tokens"),
             latency_ms=round((time.perf_counter() - started) * 1000),
-        )
+        ))
 
 
 class AnthropicClient:
@@ -83,7 +84,7 @@ class AnthropicClient:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
-        return LLMResponse(
+        return with_cost(LLMResponse(
             text=response.content[0].text,
             provider="anthropic",
             model=self.model_id,
@@ -92,13 +93,14 @@ class AnthropicClient:
             total_tokens=_sum_present(
                 _getattr_path(response, "usage", "input_tokens"),
                 _getattr_path(response, "usage", "output_tokens"),
-            ),
-            cached_input_tokens=_sum_present(
                 _getattr_path(response, "usage", "cache_creation_input_tokens"),
                 _getattr_path(response, "usage", "cache_read_input_tokens"),
             ),
+            cached_input_tokens=_getattr_path(response, "usage", "cache_read_input_tokens"),
+            cache_creation_input_tokens=_getattr_path(response, "usage", "cache_creation_input_tokens"),
+            cache_read_input_tokens=_getattr_path(response, "usage", "cache_read_input_tokens"),
             latency_ms=round((time.perf_counter() - started) * 1000),
-        )
+        ))
 
 
 class GeminiClient:
@@ -119,7 +121,7 @@ class GeminiClient:
                 "max_output_tokens": self.max_tokens,
             },
         )
-        return LLMResponse(
+        return with_cost(LLMResponse(
             text=response.text or "",
             provider="gemini",
             model=self.model_id,
@@ -129,7 +131,7 @@ class GeminiClient:
             cached_input_tokens=_getattr_path(response, "usage_metadata", "cached_content_token_count"),
             reasoning_tokens=_getattr_path(response, "usage_metadata", "thoughts_token_count"),
             latency_ms=round((time.perf_counter() - started) * 1000),
-        )
+        ))
 
 
 class CachedClient:
