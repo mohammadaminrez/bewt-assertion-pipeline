@@ -22,6 +22,7 @@ from .execution.docker_manager import DockerManager
 from .execution.app_setup import run_installer
 from .evaluation.reporter import generate_full_report
 from .evaluation.excel_export import export_results_to_excel, import_classifications_from_excel
+from .evaluation.prompt_export import export_llm_calls
 from .data.store import ResultStore
 from .runner import run_experiment, count_experiments
 
@@ -351,6 +352,43 @@ def show_prompt(ctx, app, class_name, treatment, model, call_type, latest):
     click.echo(call["user_prompt"] or "")
     click.echo("\n--- RAW RESPONSE ---")
     click.echo(call["raw_response"] or "")
+
+
+@main.command(name="export-prompts")
+@click.option("--output", "-o", type=click.Path(), default=None, help="Output .csv or .xlsx path")
+@click.option("--app", "-a", default=None, help="Filter by app")
+@click.option("--class", "class_name", default=None, help="Filter by test class")
+@click.option("--treatment", "-t", type=TreatmentType(), default=None, help="Filter by treatment")
+@click.option("--model", "-m", default=None, help="Filter by model")
+@click.option("--call-type", default=None, help="Filter by LLM call type")
+@click.pass_context
+def export_prompts(ctx, output, app, class_name, treatment, model, call_type):
+    """Export logged LLM prompts and responses to CSV or Excel."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found. Run the experiment first.")
+
+    store = ResultStore(db_path)
+    calls = store.get_llm_calls(
+        call_type=call_type,
+        app=app,
+        class_name=class_name,
+        treatment=treatment,
+        model=model,
+    )
+    store.close()
+
+    if not calls:
+        raise click.ClickException("No matching LLM calls found.")
+
+    output_path = Path(output) if output else config.output_dir / "reports" / "prompts.xlsx"
+    try:
+        export_llm_calls(calls, output_path)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Exported {len(calls)} LLM calls to {output_path}")
 
 
 @main.command()
