@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import csv
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -21,6 +22,9 @@ from .variants.html_capture import capture_html_for_app, capture_html_static
 from .execution.docker_manager import DockerManager
 from .execution.app_setup import run_installer
 from .evaluation.reporter import generate_full_report
+from .evaluation.excel_export import export_results_to_excel, import_classifications_from_excel
+from .evaluation.prompt_export import export_llm_calls
+from .evaluation.usage_report import export_treatment_comparison
 from .data.store import ResultStore
 from .runner import run_experiment, count_experiments
 
@@ -77,8 +81,8 @@ class TreatmentType(click.ParamType):
 
     def convert(self, value, param, ctx):
         value = value.upper()
-        if value not in ("A", "B", "C"):
-            self.fail(f"'{value}' is not a valid treatment. Choose from: A, B, C", param, ctx)
+        if value not in ("A", "B", "C", "D"):
+            self.fail(f"'{value}' is not a valid treatment. Choose from: A, B, C, D", param, ctx)
         return value
 
 
@@ -203,14 +207,15 @@ def capture_html(ctx, app):
 @click.option("--model", "-m", multiple=True, help="Model(s) to use")
 @click.option("--treatment", "-t", multiple=True, type=TreatmentType(), help="Treatment(s): A, B, C")
 @click.option("--execute", is_flag=True, default=False, help="Compile and run assertions against live apps (requires Maven + Docker)")
+@click.option("--limit", "-n", type=int, default=None, help="Limit number of tests per app (default: all)")
 @click.pass_context
-def run(ctx, app, model, treatment, execute):
+def run(ctx, app, model, treatment, execute, limit):
     """Run the full experiment pipeline."""
     config = ctx.obj["config"]
     _validate_bewt_repo(config)
     apps = list(app) if app else list(config.apps.keys())
     models = list(model) if model else [config.default_model]
-    treatments = tuple(treatment) if treatment else ("A", "B", "C")
+    treatments = tuple(treatment) if treatment else ("A", "B", "C", "D")
 
     _validate_api_keys(config, models)
 
@@ -221,7 +226,7 @@ def run(ctx, app, model, treatment, execute):
         if warnings and not click.confirm("Continue anyway?"):
             return
 
-    total = count_experiments(config, apps, models, treatments)
+    total = count_experiments(config, apps, models, treatments, limit=limit)
 
     def on_progress(completed, total_exp, t, class_name, message):
         progress = f"[{completed}/{total_exp}]"
@@ -250,7 +255,7 @@ def run(ctx, app, model, treatment, execute):
 
     results = run_experiment(
         config, apps=apps, models=models, treatments=treatments,
-        execute=execute, on_progress=on_progress,
+        execute=execute, on_progress=on_progress, limit=limit,
     )
 
     store = ResultStore(config.output_dir / "results.db")
@@ -285,6 +290,207 @@ def report(ctx):
     summary = store.get_summary()
     click.echo(json.dumps(summary, indent=2))
     store.close()
+
+
+def _format_optional(value, suffix: str = "") -> str:
+    if value is None:
+        return "n/a"
+    return f"{value}{suffix}"
+
+
+@main.command(name="show-prompt")
+@click.option("--app", "-a", default=None, help="Filter by app")
+@click.option("--class", "class_name", default=None, help="Filter by test class")
+@click.option("--treatment", "-t", type=TreatmentType(), default=None, help="Filter by treatment")
+@click.option("--model", "-m", default=None, help="Filter by model")
+@click.option("--call-type", default="generation", help="LLM call type (default: generation)")
+@click.option("--latest", is_flag=True, default=False, help="Show the latest matching call")
+@click.pass_context
+def show_prompt(ctx, app, class_name, treatment, model, call_type, latest):
+    """Show the exact prompt and response for one logged LLM call."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found. Run the experiment first.")
+
+    store = ResultStore(db_path)
+    calls = store.get_llm_calls(
+        call_type=call_type,
+        app=app,
+        class_name=class_name,
+        treatment=treatment,
+        model=model,
+    )
+    store.close()
+
+    if not calls:
+        raise click.ClickException("No matching LLM calls found.")
+    if len(calls) > 1 and not latest:
+        raise click.ClickException(
+            f"Found {len(calls)} matching calls. Add more filters or pass --latest."
+        )
+
+    call = calls[-1] if latest else calls[0]
+    click.echo(f"Call ID: {call['id']}")
+    click.echo(f"Type: {call['call_type']}")
+    click.echo(f"App: {call['app']}")
+    click.echo(f"Class: {call['class_name']}")
+    click.echo(f"Method: {call['method_name']}")
+    click.echo(f"Treatment: {call['treatment']}")
+    click.echo(f"Model: {call['model']}")
+    click.echo(f"Provider: {call['provider'] or 'n/a'}")
+    click.echo(f"Prompt hash: {call['prompt_hash']}")
+    click.echo(f"Input tokens: {_format_optional(call['input_tokens'])}")
+    click.echo(f"Output tokens: {_format_optional(call['output_tokens'])}")
+    click.echo(f"Total tokens: {_format_optional(call['total_tokens'])}")
+    click.echo(f"Cached input tokens: {_format_optional(call['cached_input_tokens'])}")
+    click.echo(f"Cache creation input tokens: {_format_optional(call['cache_creation_input_tokens'])}")
+    click.echo(f"Cache read input tokens: {_format_optional(call['cache_read_input_tokens'])}")
+    click.echo(f"Reasoning tokens: {_format_optional(call['reasoning_tokens'])}")
+    click.echo(f"Cost USD: {_format_optional(call['cost_usd'])}")
+    click.echo(f"Latency: {_format_optional(call['latency_ms'], ' ms')}")
+    click.echo("\n--- SYSTEM PROMPT ---")
+    click.echo(call["system_prompt"] or "")
+    click.echo("\n--- USER PROMPT ---")
+    click.echo(call["user_prompt"] or "")
+    click.echo("\n--- RAW RESPONSE ---")
+    click.echo(call["raw_response"] or "")
+
+
+@main.command(name="export-prompts")
+@click.option("--output", "-o", type=click.Path(), default=None, help="Output .csv or .xlsx path")
+@click.option("--app", "-a", default=None, help="Filter by app")
+@click.option("--class", "class_name", default=None, help="Filter by test class")
+@click.option("--treatment", "-t", type=TreatmentType(), default=None, help="Filter by treatment")
+@click.option("--model", "-m", default=None, help="Filter by model")
+@click.option("--call-type", default=None, help="Filter by LLM call type")
+@click.pass_context
+def export_prompts(ctx, output, app, class_name, treatment, model, call_type):
+    """Export logged LLM prompts and responses to CSV or Excel."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found. Run the experiment first.")
+
+    store = ResultStore(db_path)
+    calls = store.get_llm_calls(
+        call_type=call_type,
+        app=app,
+        class_name=class_name,
+        treatment=treatment,
+        model=model,
+    )
+    store.close()
+
+    if not calls:
+        raise click.ClickException("No matching LLM calls found.")
+
+    output_path = Path(output) if output else config.output_dir / "reports" / "prompts.xlsx"
+    try:
+        export_llm_calls(calls, output_path)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Exported {len(calls)} LLM calls to {output_path}")
+
+
+@main.command(name="llm-usage")
+@click.option(
+    "--by",
+    "group_by",
+    type=click.Choice(["none", "treatment", "model", "app", "call_type"]),
+    default="none",
+    help="Group usage summary",
+)
+@click.option("--output", "-o", type=click.Path(), default=None, help="Optional CSV output path")
+@click.pass_context
+def llm_usage(ctx, group_by, output):
+    """Show token, cost, and latency summary for logged LLM calls."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found. Run the experiment first.")
+
+    summary_group = None if group_by == "none" else group_by
+    store = ResultStore(db_path)
+    rows = store.get_llm_usage_summary(summary_group)
+    store.close()
+
+    if not rows:
+        raise click.ClickException("No LLM calls found.")
+
+    headers = [
+        "group",
+        "calls",
+        "input",
+        "output",
+        "total",
+        "cached",
+        "cache_write",
+        "cache_read",
+        "reasoning",
+        "cost_usd",
+        "avg_latency_ms",
+    ]
+    table_rows = []
+    for row in rows:
+        table_rows.append({
+            "group": row["group_key"],
+            "calls": row["calls"],
+            "input": row["input_tokens"],
+            "output": row["output_tokens"],
+            "total": row["total_tokens"],
+            "cached": row["cached_input_tokens"],
+            "cache_write": row["cache_creation_input_tokens"],
+            "cache_read": row["cache_read_input_tokens"],
+            "reasoning": row["reasoning_tokens"],
+            "cost_usd": row["cost_usd"] or 0,
+            "avg_latency_ms": round(row["avg_latency_ms"] or 0, 2),
+        })
+
+    widths = {
+        header: max(len(header), *(len(str(row[header])) for row in table_rows))
+        for header in headers
+    }
+    click.echo("  ".join(header.ljust(widths[header]) for header in headers))
+    click.echo("  ".join("-" * widths[header] for header in headers))
+    for row in table_rows:
+        click.echo("  ".join(str(row[header]).ljust(widths[header]) for header in headers))
+
+    if output:
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            writer.writerows(table_rows)
+        click.echo(f"Usage summary written to {output_path}")
+
+
+@main.command(name="export-treatment-comparison")
+@click.option("--output", "-o", type=click.Path(), default=None, help="Output .csv or .xlsx path")
+@click.pass_context
+def export_treatment_comparison_cmd(ctx, output):
+    """Export A/B/C/D usage and quality comparison per test/model."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found. Run the experiment first.")
+
+    store = ResultStore(db_path)
+    records = store.get_treatment_comparison_records()
+    store.close()
+
+    if not records:
+        raise click.ClickException("No experiment results found.")
+
+    output_path = Path(output) if output else config.output_dir / "reports" / "treatment_comparison.xlsx"
+    try:
+        export_treatment_comparison(records, output_path)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Exported treatment comparison for {len(records)} treatment rows to {output_path}")
 
 
 @main.command()
@@ -340,6 +546,93 @@ def info(ctx):
         gherkin_count = len(list(gherkin_dir.glob("*.feature"))) if gherkin_dir.exists() else 0
 
         click.echo(f"{app_name} ({version}): {test_count} test files, {gherkin_count} feature files")
+
+
+@main.command(name="export-excel")
+@click.option("--output", "-o", type=click.Path(), default=None, help="Output .xlsx path")
+@click.option("--pre-classify", is_flag=True, default=False, help="Use LLM to pre-fill classification suggestions")
+@click.option("--model", "-m", default=None, help="Model for pre-classification (default: config default)")
+@click.pass_context
+def export_excel(ctx, output, pre_classify, model):
+    """Export results to Excel for manual annotation."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found. Run the experiment first.")
+
+    store = ResultStore(db_path)
+    results = store.load_experiment_results()
+    if not results:
+        raise click.ClickException("No results found in database.")
+
+    pre_classifications = None
+    if pre_classify:
+        from .llm.client import create_client
+        from .evaluation.llm_classifier import pre_classify_results
+
+        model_name = model or config.default_model
+        _validate_api_keys(config, [model_name])
+        llm = create_client(config, model_name)
+
+        click.echo(f"Pre-classifying {len(results)} results with {model_name}...")
+        def on_progress(completed, total, message):
+            click.echo(f"  [{completed}/{total}] {message}")
+
+        pre_classifications = pre_classify_results(
+            results, llm, on_progress=on_progress, store=store, classifier_model=model_name
+        )
+        for key, classification in pre_classifications.items():
+            if not classification:
+                continue
+            app_name, class_name, treatment_name, result_model = key.split("|", 3)
+            store.update_llm_preclassification(
+                app=app_name,
+                class_name=class_name,
+                treatment=treatment_name,
+                model=result_model,
+                llm_preclassification=classification,
+            )
+        click.echo(f"Pre-classification complete.")
+
+    output_path = Path(output) if output else config.output_dir / "reports" / "manual_evaluation.xlsx"
+    export_results_to_excel(results, output_path, pre_classifications=pre_classifications)
+    click.echo(f"Exported {len(results)} results to {output_path}")
+    click.echo("Fill in the 'Manual Classification' column, then run: bewt-pipeline import-excel")
+    store.close()
+
+
+@main.command(name="import-excel")
+@click.option("--input", "-i", "input_path", type=click.Path(exists=True), default=None, help="Annotated .xlsx path")
+@click.pass_context
+def import_excel(ctx, input_path):
+    """Import manual classifications from an annotated Excel file back into the database."""
+    config = ctx.obj["config"]
+    db_path = config.output_dir / "results.db"
+    if not db_path.exists():
+        raise click.ClickException("No results database found.")
+
+    excel_path = Path(input_path) if input_path else config.output_dir / "reports" / "manual_evaluation.xlsx"
+    if not excel_path.exists():
+        raise click.ClickException(f"Excel file not found: {excel_path}")
+
+    annotations = import_classifications_from_excel(excel_path)
+    if not annotations:
+        raise click.ClickException("No manual classifications found in the Excel file.")
+
+    store = ResultStore(db_path)
+    updated = 0
+    for a in annotations:
+        if store.update_classification(
+            app=a["app"], class_name=a["class_name"],
+            treatment=a["treatment"], model=a["model"],
+            error_category=a["manual_classification"],
+            notes=a["manual_notes"],
+        ):
+            updated += 1
+
+    click.echo(f"Updated {updated}/{len(annotations)} classifications in database.")
+    click.echo("Run 'bewt-pipeline report' to regenerate reports with manual classifications.")
+    store.close()
 
 
 if __name__ == "__main__":

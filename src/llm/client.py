@@ -10,10 +10,29 @@ from pathlib import Path
 from typing import Protocol
 
 from ..config import Config
+from .pricing import with_cost
+from .types import LLMResponse
 
 
 class LLMClient(Protocol):
-    def generate(self, system: str, user: str) -> str: ...
+    def generate(self, system: str, user: str) -> LLMResponse: ...
+
+
+def _getattr_path(obj, *path):
+    """Read nested attributes from provider SDK objects, returning None when absent."""
+    current = obj
+    for name in path:
+        if current is None:
+            return None
+        current = getattr(current, name, None)
+    return current
+
+
+def _sum_present(*values: int | None) -> int | None:
+    present = [value for value in values if value is not None]
+    if not present:
+        return None
+    return sum(present)
 
 
 class OpenAIClient:
@@ -24,7 +43,8 @@ class OpenAIClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str) -> LLMResponse:
+        started = time.perf_counter()
         response = self.client.chat.completions.create(
             model=self.model_id,
             messages=[
@@ -34,7 +54,17 @@ class OpenAIClient:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
-        return response.choices[0].message.content
+        return with_cost(LLMResponse(
+            text=response.choices[0].message.content or "",
+            provider="openai",
+            model=self.model_id,
+            input_tokens=_getattr_path(response, "usage", "prompt_tokens"),
+            output_tokens=_getattr_path(response, "usage", "completion_tokens"),
+            total_tokens=_getattr_path(response, "usage", "total_tokens"),
+            cached_input_tokens=_getattr_path(response, "usage", "prompt_tokens_details", "cached_tokens"),
+            reasoning_tokens=_getattr_path(response, "usage", "completion_tokens_details", "reasoning_tokens"),
+            latency_ms=round((time.perf_counter() - started) * 1000),
+        ))
 
 
 class AnthropicClient:
@@ -45,7 +75,8 @@ class AnthropicClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str) -> LLMResponse:
+        started = time.perf_counter()
         response = self.client.messages.create(
             model=self.model_id,
             system=system,
@@ -53,7 +84,54 @@ class AnthropicClient:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
-        return response.content[0].text
+        return with_cost(LLMResponse(
+            text=response.content[0].text,
+            provider="anthropic",
+            model=self.model_id,
+            input_tokens=_getattr_path(response, "usage", "input_tokens"),
+            output_tokens=_getattr_path(response, "usage", "output_tokens"),
+            total_tokens=_sum_present(
+                _getattr_path(response, "usage", "input_tokens"),
+                _getattr_path(response, "usage", "output_tokens"),
+                _getattr_path(response, "usage", "cache_creation_input_tokens"),
+                _getattr_path(response, "usage", "cache_read_input_tokens"),
+            ),
+            cached_input_tokens=_getattr_path(response, "usage", "cache_read_input_tokens"),
+            cache_creation_input_tokens=_getattr_path(response, "usage", "cache_creation_input_tokens"),
+            cache_read_input_tokens=_getattr_path(response, "usage", "cache_read_input_tokens"),
+            latency_ms=round((time.perf_counter() - started) * 1000),
+        ))
+
+
+class GeminiClient:
+    def __init__(self, model_id: str, temperature: float, max_tokens: int, api_key: str):
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        self.client = genai.GenerativeModel(model_id)
+        self.model_id = model_id
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+    def generate(self, system: str, user: str) -> LLMResponse:
+        started = time.perf_counter()
+        response = self.client.generate_content(
+            f"{system}\n\n{user}",
+            generation_config={
+                "temperature": self.temperature,
+                "max_output_tokens": self.max_tokens,
+            },
+        )
+        return with_cost(LLMResponse(
+            text=response.text or "",
+            provider="gemini",
+            model=self.model_id,
+            input_tokens=_getattr_path(response, "usage_metadata", "prompt_token_count"),
+            output_tokens=_getattr_path(response, "usage_metadata", "candidates_token_count"),
+            total_tokens=_getattr_path(response, "usage_metadata", "total_token_count"),
+            cached_input_tokens=_getattr_path(response, "usage_metadata", "cached_content_token_count"),
+            reasoning_tokens=_getattr_path(response, "usage_metadata", "thoughts_token_count"),
+            latency_ms=round((time.perf_counter() - started) * 1000),
+        ))
 
 
 class CachedClient:
@@ -64,19 +142,22 @@ class CachedClient:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str) -> LLMResponse:
         key = hashlib.sha256(f"{system}|||{user}".encode()).hexdigest()
         cache_file = self.cache_dir / f"{key}.json"
 
         if cache_file.exists():
             data = json.loads(cache_file.read_text())
-            return data["response"]
+            cached = data.get("response", "")
+            if isinstance(cached, dict):
+                return LLMResponse.from_dict(cached)
+            return LLMResponse(text=cached, provider="", model="")
 
         response = self.client.generate(system, user)
         cache_file.write_text(json.dumps({
             "system": system,
             "user": user,
-            "response": response,
+            "response": response.to_dict(),
         }, indent=2))
         return response
 
@@ -89,7 +170,7 @@ class RetryClient:
         self.max_retries = max_retries
         self.delay = delay
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str) -> LLMResponse:
         last_error = None
         for attempt in range(self.max_retries):
             try:
@@ -122,6 +203,13 @@ def create_client(config: Config, model_name: str | None = None) -> LLMClient:
         )
     elif provider == "anthropic":
         client = AnthropicClient(
+            model_id=model_config["model_id"],
+            temperature=model_config["temperature"],
+            max_tokens=model_config["max_tokens"],
+            api_key=api_key,
+        )
+    elif provider == "gemini":
+        client = GeminiClient(
             model_id=model_config["model_id"],
             temperature=model_config["temperature"],
             max_tokens=model_config["max_tokens"],

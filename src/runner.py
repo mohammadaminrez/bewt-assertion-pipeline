@@ -12,11 +12,14 @@ from .variants.generator import generate_variant_a, generate_variant_b
 from .variants.html_capture import capture_html_static
 from .llm.client import create_client
 from .llm.prompt_builder import (
-    build_prompt_a, build_prompt_b, build_prompt_c, build_prompt_with_page_objects,
+    build_prompt_a, build_prompt_b, build_prompt_c, build_prompt_d,
+    build_prompt_with_page_objects,
 )
+from .llm.types import LLMCall, LLMResponse
+from .llm.observability import emit_llm_call, flush_observability
 from .llm.response_parser import extract_assertion_from_response, validate_assertion
 from .execution.java_injector import prepare_project_copy
-from .execution.test_runner import compile_project, run_suite_and_get_result
+from .execution.test_runner import compile_project, run_single_test
 from .evaluation.comparator import classify_error, compute_semantic_similarity, check_exact_match
 from .evaluation.reporter import generate_full_report
 from .data.store import ResultStore
@@ -25,7 +28,53 @@ from .data.store import ResultStore
 ProgressCallback = Callable[[int, int, str, str, str], None]
 
 
-def count_experiments(config: Config, apps: list[str], models: list[str], treatments: tuple[str, ...]) -> int:
+def _build_generation_call(
+    record,
+    treatment: str,
+    model_name: str,
+    system: str,
+    user: str,
+    response: LLMResponse,
+    experiment_id: int | None = None,
+) -> LLMCall:
+    return LLMCall(
+        experiment_id=experiment_id,
+        call_type="generation",
+        app=record.app,
+        class_name=record.class_name,
+        method_name=record.method_name,
+        treatment=treatment,
+        model=model_name,
+        provider=response.provider,
+        system_prompt=system,
+        user_prompt=user,
+        raw_response=response.text,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        total_tokens=response.total_tokens,
+        cached_input_tokens=response.cached_input_tokens,
+        cache_creation_input_tokens=response.cache_creation_input_tokens,
+        cache_read_input_tokens=response.cache_read_input_tokens,
+        reasoning_tokens=response.reasoning_tokens,
+        cost_usd=response.cost_usd,
+        latency_ms=response.latency_ms,
+    )
+
+
+def _save_and_emit_llm_call(store: ResultStore, call: LLMCall) -> int:
+    call_id = store.save_llm_call(call)
+    call.id = call_id
+    emit_llm_call(call)
+    return call_id
+
+
+def count_experiments(
+    config: Config,
+    apps: list[str],
+    models: list[str],
+    treatments: tuple[str, ...],
+    limit: int | None = None,
+) -> int:
     """Count the total number of experiments that will be run."""
     total = 0
     for _ in models:
@@ -34,6 +83,8 @@ def count_experiments(config: Config, apps: list[str], models: list[str], treatm
             if test_dir.exists():
                 n_tests = len([f for f in test_dir.glob("*.java")
                                if f.stem not in ("BaseTest", "TestSuite", "Installer")])
+                if limit is not None:
+                    n_tests = min(n_tests, limit)
                 total += n_tests * len(treatments)
     return total
 
@@ -45,6 +96,7 @@ def run_experiment(
     treatments: tuple[str, ...] = ("A", "B", "C"),
     execute: bool = False,
     on_progress: ProgressCallback | None = None,
+    limit: int | None = None,
 ) -> list[ExperimentResult]:
     """Run the full experiment pipeline.
 
@@ -62,7 +114,7 @@ def run_experiment(
     apps = apps or list(config.apps.keys())
     models = models or [config.default_model]
 
-    total = count_experiments(config, apps, models, treatments)
+    total = count_experiments(config, apps, models, treatments, limit=limit)
     store = ResultStore(config.output_dir / "results.db")
     all_results = []
     completed = 0
@@ -90,7 +142,10 @@ def run_experiment(
                 config.get_app_project_path(app_name) / "src" / "main" / "java" / "utils" / "Strings.java"
             )
             constants = resolve_strings_constants(strings_path)
+            strings_source = strings_path.read_text() if strings_path.exists() else ""
             records = parse_all_tests(test_dir, app_name, app_config["variant"], version, constants)
+            if limit is not None:
+                records = sorted(records, key=lambda r: r.class_name)[:limit]
 
             # Parse gherkin
             gherkin_dir = config.get_gherkin_path(app_name)
@@ -129,18 +184,34 @@ def run_experiment(
                         else:
                             _progress(t, record.class_name, "no_html")
                             system, user = build_prompt_b(record, variant_source)
+                    elif t == "D":
+                        variant_source = generate_variant_b(record, gherkin_map)
+                        html = capture_html_static(config, app_name, record.class_name)
+                        if not html:
+                            _progress(t, record.class_name, "no_html")
+                        system, user = build_prompt_d(
+                            record, variant_source, html, strings_source
+                        )
                     else:
                         continue
 
-                    # Add page object context
-                    system, user = build_prompt_with_page_objects(
-                        (system, user), record.page_object_sources
-                    )
+                    # Page Objects only belong to Treatment D per the experimental design
+                    if t == "D":
+                        system, user = build_prompt_with_page_objects(
+                            (system, user), record.page_object_sources
+                        )
 
                     # Call LLM
+                    llm_response = None
                     try:
-                        raw_response = llm.generate(system, user)
+                        llm_response = llm.generate(system, user)
+                        raw_response = llm_response.text
                     except Exception as e:
+                        error_response = LLMResponse(
+                            text=str(e),
+                            provider="",
+                            model=model_name,
+                        )
                         result = ExperimentResult(
                             test_record=record, treatment=t, model=model_name,
                             prompt=user, raw_response=str(e),
@@ -148,7 +219,10 @@ def run_experiment(
                             error_category=ErrorCategory.NOT_EXECUTABLE,
                             notes=f"LLM error: {e}",
                         )
-                        store.save_result(result)
+                        experiment_id = store.save_result(result)
+                        _save_and_emit_llm_call(store, _build_generation_call(
+                            record, t, model_name, system, user, error_response, experiment_id
+                        ))
                         all_results.append(result)
                         _progress(t, record.class_name, f"error:{e}")
                         continue
@@ -183,7 +257,7 @@ def run_experiment(
                         result.compiles = compile_res.success
 
                         if compile_res.success:
-                            test_res = run_suite_and_get_result(work_dir, record.class_name)
+                            test_res = run_single_test(work_dir, record.class_name)
                             result.passes = test_res.passed
                             if test_res.error_message:
                                 result.notes = test_res.error_message[:500]
@@ -202,7 +276,10 @@ def run_experiment(
                         _progress(t, record.class_name,
                                   f"{status}:sim={result.semantic_similarity:.2f},cat={result.error_category.value}")
 
-                    store.save_result(result)
+                    experiment_id = store.save_result(result)
+                    _save_and_emit_llm_call(store, _build_generation_call(
+                        record, t, model_name, system, user, llm_response, experiment_id
+                    ))
                     all_results.append(result)
 
     # Generate reports
@@ -210,4 +287,5 @@ def run_experiment(
         generate_full_report(all_results, config.output_dir / "reports")
 
     store.close()
+    flush_observability()
     return all_results

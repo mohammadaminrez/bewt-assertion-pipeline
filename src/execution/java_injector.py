@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 from ..models import TestRecord
@@ -61,6 +62,32 @@ def _ensure_imports(source: str, assertion: str) -> str:
     return '\n'.join(lines)
 
 
+def _fix_java_version(project_path: Path) -> None:
+    """Downgrade maven.compiler.source/target to match the installed JDK."""
+    result = subprocess.run(["java", "-version"], capture_output=True, text=True)
+    version_str = result.stderr or result.stdout
+    m = re.search(r'"(\d+)', version_str)
+    if not m:
+        return
+    jdk_major = m.group(1)
+
+    pom = project_path / "pom.xml"
+    if not pom.exists():
+        return
+    text = pom.read_text()
+    text = re.sub(
+        r"<maven\.compiler\.source>\d+</maven\.compiler\.source>",
+        f"<maven.compiler.source>{jdk_major}</maven.compiler.source>",
+        text,
+    )
+    text = re.sub(
+        r"<maven\.compiler\.target>\d+</maven\.compiler\.target>",
+        f"<maven.compiler.target>{jdk_major}</maven.compiler.target>",
+        text,
+    )
+    pom.write_text(text)
+
+
 def prepare_project_copy(
     config,
     app: str,
@@ -82,8 +109,13 @@ def prepare_project_copy(
         shutil.rmtree(work_dir)
     shutil.copytree(project_path, work_dir)
 
-    # Write the injected test file
-    test_file = work_dir / "src" / "test" / "java" / "tests" / Path(record.file_path).name
+    _fix_java_version(work_dir)
+
+    # Write the injected test file into the correct package directory
+    original = Path(record.file_path)
+    java_root = original.parent.parent  # go up from package dir to src/test/java
+    rel_path = original.relative_to(java_root)
+    test_file = work_dir / "src" / "test" / "java" / rel_path
     inject_assertion(record, generated_assertion, variant_source, test_file)
 
     return work_dir

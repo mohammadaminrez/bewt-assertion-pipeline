@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from ..models import AssertionRecord, AssertionType, ExperimentResult, ErrorCategory, TestRecord
+from ..llm.types import LLMCall
 
 
 class ResultStore:
@@ -36,6 +37,9 @@ class ResultStore:
                 passes INTEGER DEFAULT 0,
                 exact_match INTEGER DEFAULT 0,
                 error_category TEXT,
+                manual_error_category TEXT,
+                manual_notes TEXT,
+                llm_preclassification TEXT,
                 semantic_similarity REAL DEFAULT 0.0,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -45,8 +49,68 @@ class ResultStore:
             CREATE INDEX IF NOT EXISTS idx_experiments_app ON experiments(app);
             CREATE INDEX IF NOT EXISTS idx_experiments_treatment ON experiments(treatment);
             CREATE INDEX IF NOT EXISTS idx_experiments_model ON experiments(model);
+
+            CREATE TABLE IF NOT EXISTS llm_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                experiment_id INTEGER,
+                call_type TEXT NOT NULL,
+                app TEXT NOT NULL,
+                class_name TEXT NOT NULL,
+                method_name TEXT NOT NULL,
+                treatment TEXT NOT NULL,
+                model TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                user_prompt TEXT NOT NULL,
+                prompt_hash TEXT NOT NULL,
+                raw_response TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                cached_input_tokens INTEGER,
+                cache_creation_input_tokens INTEGER,
+                cache_read_input_tokens INTEGER,
+                reasoning_tokens INTEGER,
+                cost_usd REAL,
+                latency_ms INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(experiment_id) REFERENCES experiments(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_experiment_id ON llm_calls(experiment_id);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_call_type ON llm_calls(call_type);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_treatment ON llm_calls(treatment);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_model ON llm_calls(model);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_prompt_hash ON llm_calls(prompt_hash);
         """)
+        self._ensure_experiment_columns()
+        self._ensure_llm_call_columns()
         self.conn.commit()
+
+    def _ensure_experiment_columns(self) -> None:
+        """Add newly introduced experiments columns to existing SQLite databases."""
+        rows = self.conn.execute("PRAGMA table_info(experiments)").fetchall()
+        existing = {row["name"] for row in rows}
+        column_defs = {
+            "manual_error_category": "TEXT",
+            "manual_notes": "TEXT",
+            "llm_preclassification": "TEXT",
+        }
+        for column, definition in column_defs.items():
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE experiments ADD COLUMN {column} {definition}")
+
+    def _ensure_llm_call_columns(self) -> None:
+        """Add newly introduced llm_calls columns to existing SQLite databases."""
+        rows = self.conn.execute("PRAGMA table_info(llm_calls)").fetchall()
+        existing = {row["name"] for row in rows}
+        column_defs = {
+            "cache_creation_input_tokens": "INTEGER",
+            "cache_read_input_tokens": "INTEGER",
+        }
+        for column, definition in column_defs.items():
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE llm_calls ADD COLUMN {column} {definition}")
 
     def save_result(self, result: ExperimentResult) -> int:
         """Save an experiment result. Updates if already exists."""
@@ -127,6 +191,111 @@ class ResultStore:
             },
         }
 
+    def save_llm_call(self, call: LLMCall) -> int:
+        """Save one auditable LLM call trace."""
+        data = call.to_dict()
+        cursor = self.conn.execute("""
+            INSERT INTO llm_calls
+            (experiment_id, call_type, app, class_name, method_name, treatment, model, provider,
+             system_prompt, user_prompt, prompt_hash, raw_response,
+             input_tokens, output_tokens, total_tokens, cached_input_tokens,
+             cache_creation_input_tokens, cache_read_input_tokens,
+             reasoning_tokens, cost_usd, latency_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            data["experiment_id"], data["call_type"], data["app"], data["class_name"],
+            data["method_name"], data["treatment"], data["model"], data["provider"],
+            data["system_prompt"], data["user_prompt"], data["prompt_hash"], data["raw_response"],
+            data["input_tokens"], data["output_tokens"], data["total_tokens"],
+            data["cached_input_tokens"], data["cache_creation_input_tokens"],
+            data["cache_read_input_tokens"], data["reasoning_tokens"], data["cost_usd"],
+            data["latency_ms"],
+        ))
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def get_llm_calls(
+        self,
+        *,
+        call_type: str | None = None,
+        app: str | None = None,
+        class_name: str | None = None,
+        treatment: str | None = None,
+        model: str | None = None,
+    ) -> list[dict]:
+        """Get LLM call traces, optionally filtered by research metadata."""
+        filters = {
+            "call_type": call_type,
+            "app": app,
+            "class_name": class_name,
+            "treatment": treatment,
+            "model": model,
+        }
+        clauses = [f"{key} = ?" for key, value in filters.items() if value is not None]
+        values = [value for value in filters.values() if value is not None]
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT * FROM llm_calls{where} ORDER BY id",
+            values,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_llm_usage_summary(self, group_by: str | None = None) -> list[dict]:
+        """Summarize token/cost usage for logged LLM calls."""
+        allowed = {None, "treatment", "model", "app", "call_type"}
+        if group_by not in allowed:
+            raise ValueError(f"group_by must be one of: {', '.join(sorted(v for v in allowed if v))}")
+
+        group_select = f"{group_by} AS group_key, " if group_by else "'total' AS group_key, "
+        group_clause = f" GROUP BY {group_by}" if group_by else ""
+        rows = self.conn.execute(f"""
+            SELECT
+                {group_select}
+                COUNT(*) AS calls,
+                COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+                COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens,
+                COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
+                COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                SUM(cost_usd) AS cost_usd,
+                AVG(latency_ms) AS avg_latency_ms
+            FROM llm_calls
+            {group_clause}
+            ORDER BY group_key
+        """).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_treatment_comparison_records(self) -> list[dict]:
+        """Get generation usage joined with experiment result quality fields."""
+        rows = self.conn.execute("""
+            SELECT
+                e.app,
+                e.class_name,
+                e.method_name,
+                e.treatment,
+                e.model,
+                c.input_tokens,
+                c.output_tokens,
+                c.total_tokens,
+                c.cost_usd,
+                c.latency_ms,
+                e.exact_match,
+                e.semantic_similarity,
+                e.error_category,
+                e.manual_error_category,
+                e.llm_preclassification,
+                e.compiles,
+                e.passes
+            FROM experiments e
+            LEFT JOIN llm_calls c
+                ON c.experiment_id = e.id
+                AND c.call_type = 'generation'
+            ORDER BY e.app, e.class_name, e.method_name, e.model, e.treatment
+        """).fetchall()
+        return [dict(row) for row in rows]
+
     def load_experiment_results(self) -> list[ExperimentResult]:
         """Reconstruct ExperimentResult objects from stored DB rows."""
         rows = self.get_all_results()
@@ -165,6 +334,34 @@ class ResultStore:
                 notes=row.get("notes", "") or "",
             ))
         return results
+
+    def update_classification(self, app: str, class_name: str, treatment: str, model: str,
+                              error_category: str, notes: str = "") -> bool:
+        """Update manual annotation fields without overwriting automatic classification."""
+        cursor = self.conn.execute(
+            "UPDATE experiments SET manual_error_category=?, manual_notes=? "
+            "WHERE app=? AND class_name=? AND treatment=? AND model=?",
+            (error_category, notes, app, class_name, treatment, model),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def update_llm_preclassification(
+        self,
+        app: str,
+        class_name: str,
+        treatment: str,
+        model: str,
+        llm_preclassification: str,
+    ) -> bool:
+        """Store an LLM pre-classification suggestion separately from final labels."""
+        cursor = self.conn.execute(
+            "UPDATE experiments SET llm_preclassification=? "
+            "WHERE app=? AND class_name=? AND treatment=? AND model=?",
+            (llm_preclassification, app, class_name, treatment, model),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     def close(self) -> None:
         self.conn.close()
