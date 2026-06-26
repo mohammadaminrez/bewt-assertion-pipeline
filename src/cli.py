@@ -27,6 +27,7 @@ from .evaluation.prompt_export import export_llm_calls
 from .evaluation.usage_report import export_treatment_comparison
 from .data.store import ResultStore
 from .runner import run_experiment, count_experiments
+from .llm.prompt_builder import MODES, MODE_CUMULATIVE, valid_treatments
 
 
 def _validate_bewt_repo(config: Config) -> None:
@@ -81,8 +82,8 @@ class TreatmentType(click.ParamType):
 
     def convert(self, value, param, ctx):
         value = value.upper()
-        if value not in ("A", "B", "C", "D"):
-            self.fail(f"'{value}' is not a valid treatment. Choose from: A, B, C, D", param, ctx)
+        if value not in ("A", "B", "C", "D", "E"):
+            self.fail(f"'{value}' is not a valid treatment. Choose from: A, B, C, D, E", param, ctx)
         return value
 
 
@@ -205,17 +206,28 @@ def capture_html(ctx, app):
 @main.command()
 @click.option("--app", "-a", multiple=True, help="App(s) to run experiments on")
 @click.option("--model", "-m", multiple=True, help="Model(s) to use")
-@click.option("--treatment", "-t", multiple=True, type=TreatmentType(), help="Treatment(s): A, B, C")
+@click.option("--treatment", "-t", multiple=True, type=TreatmentType(), help="Treatment(s): A, B, C, D (E in singular mode)")
 @click.option("--execute", is_flag=True, default=False, help="Compile and run assertions against live apps (requires Maven + Docker)")
 @click.option("--limit", "-n", type=int, default=None, help="Limit number of tests per app (default: all)")
+@click.option("--mode", type=click.Choice(MODES), default=MODE_CUMULATIVE,
+              help="Experiment design: cumulative (context added step by step) or "
+                   "singular (each treatment isolates one source; adds E = full)")
 @click.pass_context
-def run(ctx, app, model, treatment, execute, limit):
+def run(ctx, app, model, treatment, execute, limit, mode):
     """Run the full experiment pipeline."""
     config = ctx.obj["config"]
     _validate_bewt_repo(config)
     apps = list(app) if app else list(config.apps.keys())
     models = list(model) if model else [config.default_model]
-    treatments = tuple(treatment) if treatment else ("A", "B", "C", "D")
+    treatments = tuple(treatment) if treatment else valid_treatments(mode)
+
+    allowed = valid_treatments(mode)
+    invalid = [t for t in treatments if t not in allowed]
+    if invalid:
+        raise click.ClickException(
+            f"Treatment(s) {', '.join(invalid)} not valid in {mode} mode. "
+            f"Valid: {', '.join(allowed)}."
+        )
 
     _validate_api_keys(config, models)
 
@@ -255,7 +267,7 @@ def run(ctx, app, model, treatment, execute, limit):
 
     results = run_experiment(
         config, apps=apps, models=models, treatments=treatments,
-        execute=execute, on_progress=on_progress, limit=limit,
+        execute=execute, on_progress=on_progress, limit=limit, mode=mode,
     )
 
     store = ResultStore(config.output_dir / "results.db")

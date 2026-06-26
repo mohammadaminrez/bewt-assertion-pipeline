@@ -108,10 +108,11 @@ def test_emit_llm_call_sends_generation_to_langfuse(monkeypatch):
     assert observation.update_payload["metadata"]["local_call_id"] == 7
     assert observation.update_payload["metadata"]["experiment_id"] == 42
     assert observation.update_payload["metadata"]["treatment"] == "D"
-    assert observation.trace_payload["name"] == "mantisbt · AddNewProject · TD"
+    assert observation.trace_payload["name"] == "mantisbt · AddNewProject · TD · cumulative"
     assert set(observation.trace_payload["tags"]) == {
         "app:mantisbt",
         "treatment:D",
+        "mode:cumulative",
         "model:gpt-4o-mini",
         "call_type:generation",
     }

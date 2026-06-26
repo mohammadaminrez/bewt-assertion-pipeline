@@ -39,8 +39,8 @@ def _treatment_label(call: LLMCall) -> str:
 
 
 def _trace_name(call: LLMCall) -> str:
-    """Human-scannable trace name: which app, which test, which mode."""
-    parts = [p for p in (call.app, call.class_name, _treatment_label(call)) if p]
+    """Human-scannable trace name: which app, which test, treatment, design."""
+    parts = [p for p in (call.app, call.class_name, _treatment_label(call), call.mode) if p]
     return " · ".join(parts) or f"bewt-{call.call_type}"
 
 
@@ -55,6 +55,8 @@ def _trace_tags(call: LLMCall) -> list[str]:
         tags.append(f"app:{call.app}")
     if call.treatment:
         tags.append(f"treatment:{call.treatment}")
+    if call.mode:
+        tags.append(f"mode:{call.mode}")
     if call.model:
         tags.append(f"model:{call.model}")
     if call.call_type:
@@ -76,6 +78,7 @@ def emit_llm_call(call: LLMCall) -> None:
         "class_name": call.class_name,
         "method_name": call.method_name,
         "treatment": call.treatment,
+        "mode": call.mode,
         "model": call.model,
         "provider": call.provider,
         "prompt_hash": call.prompt_hash,
