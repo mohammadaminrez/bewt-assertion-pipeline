@@ -24,7 +24,10 @@ def _get_langfuse_client():
     if host and not os.environ.get("LANGFUSE_BASE_URL"):
         os.environ["LANGFUSE_BASE_URL"] = host
 
-    os.environ.setdefault("OTEL_EXPORTER_OTLP_TIMEOUT", "30")
+    # Langfuse uses its own HTTP timeout (LANGFUSE_TIMEOUT, seconds, default 5)
+    # for the span exporter — the OTLP env var is ignored. The default 5s is too
+    # short for slow links and silently drops the flush, so extend it.
+    os.environ.setdefault("LANGFUSE_TIMEOUT", "30")
 
     try:
         from langfuse import get_client
