@@ -12,6 +12,7 @@ class FakeObservation:
         self.client = client
         self.kwargs = kwargs
         self.update_payload = None
+        self.trace_payload = None
 
     def __enter__(self):
         self.client.observations.append(self)
@@ -22,6 +23,9 @@ class FakeObservation:
 
     def update(self, **kwargs):
         self.update_payload = kwargs
+
+    def update_trace(self, **kwargs):
+        self.trace_payload = kwargs
 
 
 class FakeLangfuseClient:
@@ -87,7 +91,7 @@ def test_emit_llm_call_sends_generation_to_langfuse(monkeypatch):
     assert len(fake_client.observations) == 1
     observation = fake_client.observations[0]
     assert observation.kwargs["as_type"] == "generation"
-    assert observation.kwargs["name"] == "bewt-generation"
+    assert observation.kwargs["name"] == "generation · gpt-4o-mini"
     assert observation.kwargs["model"] == "gpt-4o-mini"
     assert observation.kwargs["input"] == [
         {"role": "system", "content": "system prompt"},
@@ -104,5 +108,12 @@ def test_emit_llm_call_sends_generation_to_langfuse(monkeypatch):
     assert observation.update_payload["metadata"]["local_call_id"] == 7
     assert observation.update_payload["metadata"]["experiment_id"] == 42
     assert observation.update_payload["metadata"]["treatment"] == "D"
+    assert observation.trace_payload["name"] == "mantisbt · AddNewProject · TD"
+    assert set(observation.trace_payload["tags"]) == {
+        "app:mantisbt",
+        "treatment:D",
+        "model:gpt-4o-mini",
+        "call_type:generation",
+    }
     assert fake_client.flushed
     observability._get_langfuse_client.cache_clear()
