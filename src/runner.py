@@ -11,10 +11,7 @@ from .parsing.gherkin_parser import parse_all_gherkin
 from .variants.generator import generate_variant_a, generate_variant_b
 from .variants.html_capture import capture_html_static
 from .llm.client import create_client
-from .llm.prompt_builder import (
-    build_prompt_a, build_prompt_b, build_prompt_c, build_prompt_d,
-    build_prompt_with_page_objects,
-)
+from .llm.prompt_builder import build_assertion_prompt, treatment_ingredients
 from .llm.types import LLMCall, LLMResponse
 from .llm.observability import emit_llm_call, flush_observability
 from .llm.response_parser import extract_assertion_from_response, validate_assertion
@@ -36,6 +33,7 @@ def _build_generation_call(
     user: str,
     response: LLMResponse,
     experiment_id: int | None = None,
+    mode: str = "cumulative",
 ) -> LLMCall:
     return LLMCall(
         experiment_id=experiment_id,
@@ -44,6 +42,7 @@ def _build_generation_call(
         class_name=record.class_name,
         method_name=record.method_name,
         treatment=treatment,
+        mode=mode,
         model=model_name,
         provider=response.provider,
         system_prompt=system,
@@ -97,6 +96,7 @@ def run_experiment(
     execute: bool = False,
     on_progress: ProgressCallback | None = None,
     limit: int | None = None,
+    mode: str = "cumulative",
 ) -> list[ExperimentResult]:
     """Run the full experiment pipeline.
 
@@ -107,6 +107,8 @@ def run_experiment(
         treatments: Treatment codes to run.
         execute: If True, compile and run assertions against live apps.
         on_progress: Callback for progress reporting.
+        mode: Experiment design — "cumulative" (context added step by step) or
+            "singular" (each treatment isolates one context source).
 
     Returns:
         List of ExperimentResult objects.
@@ -165,41 +167,35 @@ def run_experiment(
                     completed += 1
 
                     # Resumability
-                    if store.has_result(app_name, version, record.class_name, t, model_name):
+                    if store.has_result(app_name, version, record.class_name, t, model_name, mode):
                         _progress(t, record.class_name, "skipped")
                         continue
 
-                    # Build variant source and prompt
-                    if t == "A":
+                    # Resolve which context sources this treatment includes
+                    # under the active design, then assemble the prompt.
+                    ingredients = treatment_ingredients(mode, t)
+
+                    if ingredients.comments:
+                        variant_source = generate_variant_b(record, gherkin_map)
+                    else:
                         variant_source = generate_variant_a(record)
-                        system, user = build_prompt_a(record)
-                    elif t == "B":
-                        variant_source = generate_variant_b(record, gherkin_map)
-                        system, user = build_prompt_b(record, variant_source)
-                    elif t == "C":
-                        variant_source = generate_variant_b(record, gherkin_map)
-                        html = capture_html_static(config, app_name, record.class_name)
-                        if html:
-                            system, user = build_prompt_c(record, variant_source, html)
-                        else:
-                            _progress(t, record.class_name, "no_html")
-                            system, user = build_prompt_b(record, variant_source)
-                    elif t == "D":
-                        variant_source = generate_variant_b(record, gherkin_map)
+
+                    html = None
+                    if ingredients.html:
                         html = capture_html_static(config, app_name, record.class_name)
                         if not html:
                             _progress(t, record.class_name, "no_html")
-                        system, user = build_prompt_d(
-                            record, variant_source, html, strings_source
-                        )
-                    else:
-                        continue
 
-                    # Page Objects only belong to Treatment D per the experimental design
-                    if t == "D":
-                        system, user = build_prompt_with_page_objects(
-                            (system, user), record.page_object_sources
-                        )
+                    system, user = build_assertion_prompt(
+                        record,
+                        variant_source=variant_source,
+                        include_comments=ingredients.comments,
+                        html_content=html,
+                        strings_source=strings_source if ingredients.project else None,
+                        page_object_sources=(
+                            record.page_object_sources if ingredients.project else None
+                        ),
+                    )
 
                     # Call LLM
                     llm_response = None
@@ -213,7 +209,7 @@ def run_experiment(
                             model=model_name,
                         )
                         result = ExperimentResult(
-                            test_record=record, treatment=t, model=model_name,
+                            test_record=record, treatment=t, model=model_name, mode=mode,
                             prompt=user, raw_response=str(e),
                             generated_assertion="",
                             error_category=ErrorCategory.NOT_EXECUTABLE,
@@ -221,7 +217,7 @@ def run_experiment(
                         )
                         experiment_id = store.save_result(result)
                         _save_and_emit_llm_call(store, _build_generation_call(
-                            record, t, model_name, system, user, error_response, experiment_id
+                            record, t, model_name, system, user, error_response, experiment_id, mode
                         ))
                         all_results.append(result)
                         _progress(t, record.class_name, f"error:{e}")
@@ -232,7 +228,7 @@ def run_experiment(
                     valid = validate_assertion(generated)
 
                     result = ExperimentResult(
-                        test_record=record, treatment=t, model=model_name,
+                        test_record=record, treatment=t, model=model_name, mode=mode,
                         prompt=user, raw_response=raw_response,
                         generated_assertion=generated,
                     )
@@ -278,7 +274,7 @@ def run_experiment(
 
                     experiment_id = store.save_result(result)
                     _save_and_emit_llm_call(store, _build_generation_call(
-                        record, t, model_name, system, user, llm_response, experiment_id
+                        record, t, model_name, system, user, llm_response, experiment_id, mode
                     ))
                     all_results.append(result)
 
