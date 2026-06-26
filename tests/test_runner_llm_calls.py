@@ -61,6 +61,27 @@ def test_build_generation_call_copies_prompt_response_and_usage_metadata():
     assert call.latency_ms == 345
 
 
+def test_build_generation_call_carries_mode():
+    record = TestRecord(
+        app="mantisbt", variant="v1", version="1.0",
+        file_path="AddNewProject.java", class_name="AddNewProject",
+        method_name="addNewProject",
+    )
+    response = LLMResponse(text="raw", provider="openai", model="gpt-4o-mini")
+
+    default_call = _build_generation_call(
+        record=record, treatment="C", model_name="gpt-4o-mini",
+        system="s", user="u", response=response,
+    )
+    assert default_call.mode == "cumulative"
+
+    singular_call = _build_generation_call(
+        record=record, treatment="C", model_name="gpt-4o-mini",
+        system="s", user="u", response=response, mode="singular",
+    )
+    assert singular_call.mode == "singular"
+
+
 def test_save_and_emit_llm_call_sets_local_call_id(tmp_path, monkeypatch):
     from src.data.store import ResultStore
 

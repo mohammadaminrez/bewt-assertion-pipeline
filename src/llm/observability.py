@@ -24,7 +24,10 @@ def _get_langfuse_client():
     if host and not os.environ.get("LANGFUSE_BASE_URL"):
         os.environ["LANGFUSE_BASE_URL"] = host
 
-    os.environ.setdefault("OTEL_EXPORTER_OTLP_TIMEOUT", "30")
+    # Langfuse uses its own HTTP timeout (LANGFUSE_TIMEOUT, seconds, default 5)
+    # for the span exporter — the OTLP env var is ignored. The default 5s is too
+    # short for slow links and silently drops the flush, so extend it.
+    os.environ.setdefault("LANGFUSE_TIMEOUT", "30")
 
     try:
         from langfuse import get_client
@@ -34,16 +37,60 @@ def _get_langfuse_client():
     return get_client()
 
 
+def _treatment_label(call: LLMCall) -> str:
+    return f"T{call.treatment}" if call.treatment else call.call_type
+
+
+def _trace_name(call: LLMCall) -> str:
+    """Human-scannable trace name: which app, which test, treatment, design."""
+    parts = [p for p in (call.app, call.class_name, _treatment_label(call), call.mode) if p]
+    return " · ".join(parts) or f"bewt-{call.call_type}"
+
+
+def _observation_name(call: LLMCall) -> str:
+    """The model call itself, identified by call type and model."""
+    return f"{call.call_type} · {call.model}" if call.model else call.call_type
+
+
+def _trace_tags(call: LLMCall) -> list[str]:
+    tags = []
+    if call.app:
+        tags.append(f"app:{call.app}")
+    if call.treatment:
+        tags.append(f"treatment:{call.treatment}")
+    if call.mode:
+        tags.append(f"mode:{call.mode}")
+    if call.model:
+        tags.append(f"model:{call.model}")
+    if call.call_type:
+        tags.append(f"call_type:{call.call_type}")
+    return tags
+
+
 def emit_llm_call(call: LLMCall) -> None:
     """Mirror one locally persisted LLM call to Langfuse when configured."""
     langfuse = _get_langfuse_client()
     if langfuse is None:
         return
 
+    metadata = {
+        "local_call_id": call.id,
+        "experiment_id": call.experiment_id,
+        "call_type": call.call_type,
+        "app": call.app,
+        "class_name": call.class_name,
+        "method_name": call.method_name,
+        "treatment": call.treatment,
+        "mode": call.mode,
+        "model": call.model,
+        "provider": call.provider,
+        "prompt_hash": call.prompt_hash,
+    }
+
     try:
         with langfuse.start_as_current_observation(
             as_type="generation",
-            name=f"bewt-{call.call_type}-T{call.treatment}" if call.treatment else f"bewt-{call.call_type}",
+            name=_observation_name(call),
             model=call.model,
             input=[
                 {"role": "system", "content": call.system_prompt},
@@ -54,17 +101,14 @@ def emit_llm_call(call: LLMCall) -> None:
                 output=call.raw_response,
                 usage_details=_usage_details(call),
                 cost_details=_cost_details(call),
-                metadata={
-                    "local_call_id": call.id,
-                    "experiment_id": call.experiment_id,
-                    "call_type": call.call_type,
-                    "app": call.app,
-                    "class_name": call.class_name,
-                    "method_name": call.method_name,
-                    "treatment": call.treatment,
-                    "provider": call.provider,
-                    "prompt_hash": call.prompt_hash,
-                },
+                metadata=metadata,
+            )
+            # Name the enclosing trace so the trace list shows app/test/mode
+            # instead of inheriting the generic generation name.
+            generation.update_trace(
+                name=_trace_name(call),
+                tags=_trace_tags(call),
+                metadata=metadata,
             )
     except Exception:
         return
