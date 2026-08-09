@@ -1,48 +1,14 @@
 from __future__ import annotations
 
-"""Compare generated assertions with gold-standard assertions."""
+"""Compare generated assertions with gold-standard assertions.
+
+These are similarity signals only. Qualitative categories (correct /
+over-assertive / under-assertive / wrong) are assigned by review, not here —
+assertion strength cannot be decided from the assertion text alone.
+"""
 
 import re
-from ..models import AssertionRecord, AssertionType, ErrorCategory
-
-
-def classify_error(
-    generated: str,
-    gold_assertions: list[AssertionRecord],
-    compiles: bool,
-    passes: bool,
-) -> ErrorCategory:
-    """Classify the error type of a generated assertion."""
-    if not compiles:
-        return ErrorCategory.NOT_EXECUTABLE
-
-    if not generated.strip():
-        return ErrorCategory.NOT_EXECUTABLE
-
-    # Check exact match
-    gold_text = "\n".join(a.full_text for a in gold_assertions)
-    if _normalize(generated) == _normalize(gold_text):
-        return ErrorCategory.CORRECT
-
-    if passes:
-        # Passes but different from gold — could be correct, over, or under assertive
-        gen_count = _count_assertions(generated)
-        gold_count = len(gold_assertions)
-
-        if gen_count > gold_count:
-            return ErrorCategory.OVER_ASSERTIVE
-        elif gen_count < gold_count:
-            return ErrorCategory.UNDER_ASSERTIVE
-
-        # Same count but different — check if semantically equivalent
-        if _is_semantically_equivalent(generated, gold_assertions):
-            return ErrorCategory.CORRECT
-        else:
-            # Passes but tests different things
-            return ErrorCategory.WRONG_ASSERTION
-    else:
-        # Fails — wrong assertion
-        return ErrorCategory.WRONG_ASSERTION
+from ..models import AssertionRecord, AssertionType
 
 
 def compute_semantic_similarity(
@@ -102,11 +68,6 @@ def _normalize(text: str) -> str:
     return text
 
 
-def _count_assertions(code: str) -> int:
-    """Count assertion calls in code."""
-    return len(re.findall(r'assert(?:Equals|True|False|NotNull|Null)\s*\(', code))
-
-
 def _extract_assertion_types(code: str) -> list[AssertionType]:
     """Extract assertion types from code."""
     types = []
@@ -136,20 +97,6 @@ def _set_similarity(a: set, b: set) -> float:
     intersection = a & b
     union = a | b
     return len(intersection) / len(union) if union else 0.0
-
-
-def _is_semantically_equivalent(generated: str, gold_assertions: list[AssertionRecord]) -> bool:
-    """Heuristic check for semantic equivalence."""
-    gen_literals = _extract_string_literals(generated)
-    gold_literals = set()
-    for a in gold_assertions:
-        if a.expected_value:
-            val = a.resolved_expected or a.expected_value
-            gold_literals.add(val.strip('"'))
-        gold_literals.update(_extract_string_literals(a.full_text))
-
-    # If all expected values match, consider it equivalent
-    return gen_literals == gold_literals
 
 
 def _normalized_levenshtein(s1: str, s2: str) -> float:

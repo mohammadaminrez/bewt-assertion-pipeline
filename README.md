@@ -75,25 +75,44 @@ bewt-pipeline run --app mantisbt --model gpt-4o-mini \
   --treatment A --treatment B --treatment C --treatment D --execute
 ```
 
-## Manual Evaluation Workflow
+## Evaluation Workflow
 
-Auto-classification of assertion quality (over/under-assertive) is undecidable in general. The pipeline uses an Excel-based manual evaluation workflow with LLM pre-classification as suggestions:
+The pipeline reports two different kinds of result, and only one of them can be
+decided by code.
+
+**Functional evaluation** — Passed / Failed / Not working — is mechanical, and
+comes straight from `--execute`:
+
+| Outcome | Meaning |
+|---|---|
+| Passed | compiled and the test passed |
+| Failed | compiled, but the test failed |
+| Not working | did not compile |
+
+**Qualitative evaluation** — correct / over-assertive / under-assertive /
+wrong / not executable — is *not* computed. Deciding whether an assertion is
+too weak or too strong means reading the test and the Page Object methods it
+calls; comparing assertion text cannot do it. So the pipeline leaves that label
+`pending` and ships the evidence for a reviewer instead:
 
 ```bash
-# 1. Export results to Excel with LLM pre-filled suggestions
-bewt-pipeline export-excel --pre-classify
+# 1. Export results to Excel — one row per (test, treatment, model), with the
+#    test code, gold assertion, generated assertion, pass/fail and failure reason
+bewt-pipeline export-excel
 
-# 2. Open the Excel, review/correct the "Manual Classification" column
-#    Classifications: correct, over_assertive, under_assertive, wrong_assertion, not_executable
+# 2. Fill in the "Classification" column
+#    Options: correct, over_assertive, under_assertive, wrong_assertion, not_executable
 
-# 3. Import your manual annotations back into the database
+# 3. Import the reviewed labels back into the database
 bewt-pipeline import-excel
 
-# 4. Generate final reports from manual classifications
+# 4. Generate reports, which use the reviewed labels
 bewt-pipeline report
 ```
 
-The Excel includes a "Classification Guide" sheet with definitions and examples for each category.
+The Excel includes a "Classification Guide" sheet defining each category.
+Unreviewed rows stay visible as `pending` in the reports rather than being
+counted as anything else, so review coverage is always apparent.
 
 ## Prerequisites
 
@@ -111,8 +130,8 @@ The Excel includes a "Classification Guide" sheet with definitions and examples 
 | `bewt-pipeline setup-app --app <name>` | Deploy app + run installer to configure it |
 | `bewt-pipeline capture-html --app <name>` | Capture HTML pages for Treatment C/D |
 | `bewt-pipeline run` | Run experiment: prompt LLM, evaluate, report |
-| `bewt-pipeline export-excel` | Export results to Excel for manual evaluation |
-| `bewt-pipeline import-excel` | Import manual classifications from annotated Excel |
+| `bewt-pipeline export-excel` | Export results to Excel for review |
+| `bewt-pipeline import-excel` | Import reviewed classifications from annotated Excel |
 | `bewt-pipeline report` | Regenerate reports from stored results |
 
 ## Testing

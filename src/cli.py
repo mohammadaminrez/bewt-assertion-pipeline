@@ -562,11 +562,9 @@ def info(ctx):
 
 @main.command(name="export-excel")
 @click.option("--output", "-o", type=click.Path(), default=None, help="Output .xlsx path")
-@click.option("--pre-classify", is_flag=True, default=False, help="Use LLM to pre-fill classification suggestions")
-@click.option("--model", "-m", default=None, help="Model for pre-classification (default: config default)")
 @click.pass_context
-def export_excel(ctx, output, pre_classify, model):
-    """Export results to Excel for manual annotation."""
+def export_excel(ctx, output):
+    """Export results to Excel for review and categorization."""
     config = ctx.obj["config"]
     db_path = config.output_dir / "results.db"
     if not db_path.exists():
@@ -577,39 +575,10 @@ def export_excel(ctx, output, pre_classify, model):
     if not results:
         raise click.ClickException("No results found in database.")
 
-    pre_classifications = None
-    if pre_classify:
-        from .llm.client import create_client
-        from .evaluation.llm_classifier import pre_classify_results
-
-        model_name = model or config.default_model
-        _validate_api_keys(config, [model_name])
-        llm = create_client(config, model_name)
-
-        click.echo(f"Pre-classifying {len(results)} results with {model_name}...")
-        def on_progress(completed, total, message):
-            click.echo(f"  [{completed}/{total}] {message}")
-
-        pre_classifications = pre_classify_results(
-            results, llm, on_progress=on_progress, store=store, classifier_model=model_name
-        )
-        for key, classification in pre_classifications.items():
-            if not classification:
-                continue
-            app_name, class_name, treatment_name, result_model = key.split("|", 3)
-            store.update_llm_preclassification(
-                app=app_name,
-                class_name=class_name,
-                treatment=treatment_name,
-                model=result_model,
-                llm_preclassification=classification,
-            )
-        click.echo(f"Pre-classification complete.")
-
     output_path = Path(output) if output else config.output_dir / "reports" / "manual_evaluation.xlsx"
-    export_results_to_excel(results, output_path, pre_classifications=pre_classifications)
+    export_results_to_excel(results, output_path)
     click.echo(f"Exported {len(results)} results to {output_path}")
-    click.echo("Fill in the 'Manual Classification' column, then run: bewt-pipeline import-excel")
+    click.echo("Fill in the 'Classification' column, then run: bewt-pipeline import-excel")
     store.close()
 
 
@@ -639,6 +608,7 @@ def import_excel(ctx, input_path):
             treatment=a["treatment"], model=a["model"],
             error_category=a["manual_classification"],
             notes=a["manual_notes"],
+            mode=a.get("mode") or None,
         ):
             updated += 1
 

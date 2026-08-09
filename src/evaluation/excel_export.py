@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-"""Export experiment results to Excel for manual annotation and import back."""
+"""Export experiment results to Excel for review and import the labels back.
 
+The pipeline deliberately does not guess the qualitative category. Deciding
+whether an assertion is over- or under-assertive requires reading the test and
+the Page Object methods it calls, so the export ships that evidence alongside
+each row and leaves the ``Classification`` column empty for a reviewer.
+"""
+
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -24,39 +31,49 @@ GUIDE_ROWS = [
 ]
 
 
+def extract_test_code(prompt: str) -> str:
+    """Pull the test method source back out of a stored prompt.
+
+    Every treatment's prompt embeds the stripped test in a ```java block right
+    after "Test code:". Treatments C/D append HTML and Page Object blocks after
+    it, so only the first java block is taken.
+    """
+    match = re.search(r"Test code:\s*```java\n(.*?)\n```", prompt, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    # Older prompts put the java block first without the "Test code:" label.
+    match = re.search(r"```java\n(.*?)\n```", prompt, re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
 def export_results_to_excel(
     results: list[ExperimentResult],
     output_path: Path,
-    pre_classifications: dict[str, str] | None = None,
 ) -> None:
-    """Export results to an Excel file for manual annotation.
+    """Export results to an Excel file for review.
 
-    Args:
-        results: Experiment results to export.
-        output_path: Path to write the .xlsx file.
-        pre_classifications: Optional dict of "app|class|treatment|model" -> classification
-            from LLM pre-classification.
+    The ``Classification`` column is left empty — it is filled in by a reviewer
+    and read back by ``import_classifications_from_excel``.
     """
     rows = []
     for r in results:
-        key = f"{r.test_record.app}|{r.test_record.class_name}|{r.treatment}|{r.model}"
-        pre_class = (pre_classifications or {}).get(key, "")
         rows.append({
             "App": r.test_record.app,
+            "Mode": r.mode,
             "Test Class": r.test_record.class_name,
             "Method": r.test_record.method_name,
             "Treatment": r.treatment,
             "Model": r.model,
+            "Test Code": extract_test_code(r.prompt),
             "Gold Standard Assertion": r.test_record.gold_standard,
             "Generated Assertion": r.generated_assertion,
             "Compiles": r.compiles,
-            "Pass/Fail": "PASS" if r.passes else "FAIL",
+            "Outcome": r.outcome.value,
+            "Functional": r.outcome.functional_bucket,
+            "Error Type": r.error_type,
             "Fail Reason": r.notes if not r.passes and r.notes and r.notes != "execution skipped" else "",
-            "Semantic Sim (heuristic)": round(r.semantic_similarity, 4),
-            "Auto-Classification": r.error_category.value,
-            "LLM Pre-Classification": pre_class,
-            "Manual Classification": "",
-            "Manual Notes": "",
+            "Classification": "",
+            "Notes": "",
         })
 
     df = pd.DataFrame(rows)
@@ -94,9 +111,9 @@ def _apply_formatting(ws, num_rows: int) -> None:
     pass_fail_col = None
     manual_class_col = None
     for idx, cell in enumerate(ws[1], 1):
-        if cell.value == "Pass/Fail":
+        if cell.value == "Functional":
             pass_fail_col = idx
-        if cell.value == "Manual Classification":
+        if cell.value == "Classification":
             manual_class_col = idx
 
     for row in range(2, num_rows + 2):
@@ -107,9 +124,9 @@ def _apply_formatting(ws, num_rows: int) -> None:
 
         if pass_fail_col:
             cell = ws.cell(row=row, column=pass_fail_col)
-            if cell.value == "PASS":
+            if cell.value == "passed":
                 cell.fill = pass_fill
-            elif cell.value == "FAIL":
+            elif cell.value in ("failed", "not_working"):
                 cell.fill = fail_fill
 
     if manual_class_col:
@@ -121,18 +138,17 @@ def _apply_formatting(ws, num_rows: int) -> None:
         dv.error = "Please select a valid classification"
         dv.errorTitle = "Invalid classification"
         dv.prompt = "Select classification"
-        dv.promptTitle = "Manual Classification"
+        dv.promptTitle = "Classification"
         ws.add_data_validation(dv)
         for row in range(2, num_rows + 2):
             dv.add(ws.cell(row=row, column=manual_class_col))
 
     col_widths = {
-        "App": 12, "Test Class": 25, "Method": 20,
-        "Treatment": 10, "Model": 15,
+        "App": 12, "Mode": 12, "Test Class": 25, "Method": 20,
+        "Treatment": 10, "Model": 15, "Test Code": 70,
         "Gold Standard Assertion": 50, "Generated Assertion": 50,
-        "Compiles": 10, "Pass/Fail": 10, "Fail Reason": 40,
-        "Semantic Sim (heuristic)": 15, "Auto-Classification": 22,
-        "LLM Pre-Classification": 22, "Manual Classification": 22, "Manual Notes": 30,
+        "Compiles": 10, "Outcome": 14, "Functional": 14, "Error Type": 32, "Fail Reason": 40,
+        "Classification": 22, "Notes": 30,
     }
     for idx, cell in enumerate(ws[1], 1):
         width = col_widths.get(cell.value, 15)
@@ -163,25 +179,28 @@ def _add_guide_sheet(wb) -> None:
 def import_classifications_from_excel(
     excel_path: Path,
 ) -> list[dict]:
-    """Read manual classifications from an annotated Excel file.
+    """Read classifications from an annotated Excel file.
 
-    Returns a list of dicts with keys: app, class_name, treatment, model, manual_classification, manual_notes.
+    Returns a list of dicts with keys: app, mode, class_name, treatment, model,
+    manual_classification, manual_notes. Rows with an empty ``Classification``
+    are skipped, so a partially reviewed sheet imports cleanly.
     """
     df = pd.read_excel(str(excel_path), sheet_name="Results", engine="openpyxl")
 
     annotations = []
     for _, row in df.iterrows():
-        manual_class = row.get("Manual Classification", "")
+        manual_class = row.get("Classification", "")
         if pd.isna(manual_class) or not str(manual_class).strip():
             continue
+        mode = row.get("Mode", "")
         annotations.append({
             "app": row["App"],
+            "mode": "" if pd.isna(mode) else str(mode).strip(),
             "class_name": row["Test Class"],
             "treatment": row["Treatment"],
             "model": row["Model"],
             "manual_classification": str(manual_class).strip(),
-            "manual_notes": str(row.get("Manual Notes", "") or ""),
-            "llm_preclassification": str(row.get("LLM Pre-Classification", "") or ""),
+            "manual_notes": str(row.get("Notes", "") or ""),
         })
 
     return annotations

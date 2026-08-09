@@ -14,12 +14,42 @@ class AssertionType(Enum):
     ASSERT_NULL = "assertNull"
 
 
+class ExecutionOutcome(Enum):
+    """What happened when the generated assertion was actually run.
+
+    JUnit reports two distinct kinds of non-pass, and they mean opposite things
+    here: a *failure* is the assertion rejecting a value (a real verdict about
+    the assertion), while an *error* is the test blowing up before it ever
+    reached the assertion (app down, missing precondition, stale locator).
+    Collapsing them into one boolean makes a bad assertion indistinguishable
+    from a broken environment.
+    """
+    PASSED = "passed"            # ran, assertion held
+    FAILED = "failed"            # ran, assertion rejected the value
+    ERRORED = "errored"          # threw before reaching a verdict
+    NOT_COMPILED = "not_compiled"  # never ran
+    NOT_RUN = "not_run"          # execution was not requested
+
+    @property
+    def functional_bucket(self) -> str:
+        """The Passed / Failed / Not working bucket used for reporting."""
+        if self is ExecutionOutcome.PASSED:
+            return "passed"
+        if self is ExecutionOutcome.FAILED:
+            return "failed"
+        return "not_working"
+
+
 class ErrorCategory(Enum):
+    # Assigned by review only — the pipeline never guesses these.
     CORRECT = "correct"
     OVER_ASSERTIVE = "over_assertive"
     UNDER_ASSERTIVE = "under_assertive"
     WRONG_ASSERTION = "wrong_assertion"
+    # Assigned mechanically: the assertion could not be run at all.
     NOT_EXECUTABLE = "not_executable"
+    # Ran, but nobody has judged its quality yet.
+    PENDING = "pending"
 
 
 @dataclass
@@ -109,11 +139,30 @@ class ExperimentResult:
     generated_assertion: str
     compiles: bool = False
     passes: bool = False
+    outcome: ExecutionOutcome = ExecutionOutcome.NOT_RUN
+    error_type: str = ""  # e.g. org.junit.ComparisonFailure, NoSuchElementException
     exact_match: bool = False
-    error_category: ErrorCategory = ErrorCategory.NOT_EXECUTABLE
+    error_category: ErrorCategory = ErrorCategory.PENDING
     semantic_similarity: float = 0.0
     notes: str = ""
     mode: str = "cumulative"  # experiment design: cumulative | singular
+    manual_error_category: str = ""  # filled in by review, via import-excel
+
+    @property
+    def final_category(self) -> str:
+        """The category to report: the reviewed label when one exists."""
+        if self.manual_error_category:
+            return self.manual_error_category
+        return self.error_category.value
+
+    def set_outcome(self, outcome: ExecutionOutcome, error_type: str = "") -> None:
+        """Record an execution outcome, keeping compiles/passes consistent."""
+        self.outcome = outcome
+        self.error_type = error_type
+        self.compiles = outcome not in (
+            ExecutionOutcome.NOT_COMPILED, ExecutionOutcome.NOT_RUN
+        )
+        self.passes = outcome is ExecutionOutcome.PASSED
 
     def to_dict(self) -> dict:
         return {
@@ -129,8 +178,13 @@ class ExperimentResult:
             "gold_standard": self.test_record.gold_standard,
             "compiles": self.compiles,
             "passes": self.passes,
+            "outcome": self.outcome.value,
+            "functional_bucket": self.outcome.functional_bucket,
+            "error_type": self.error_type,
             "exact_match": self.exact_match,
             "error_category": self.error_category.value,
+            "manual_error_category": self.manual_error_category,
+            "final_category": self.final_category,
             "semantic_similarity": self.semantic_similarity,
             "notes": self.notes,
         }

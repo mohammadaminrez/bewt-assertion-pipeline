@@ -32,12 +32,15 @@ def compute_aggregate_metrics(results: list[ExperimentResult]) -> AggregateMetri
     exact_matches = sum(1 for r in results if r.exact_match)
     avg_sim = sum(r.semantic_similarity for r in results) / total
 
-    error_dist = Counter(r.error_category.value for r in results)
+    # Reported categories come from review; unreviewed rows stay visible as
+    # "pending" rather than being silently counted as anything else.
+    error_dist = Counter(r.final_category for r in results)
 
-    # Functional accuracy metrics
-    tp = sum(1 for r in results if r.error_category == ErrorCategory.CORRECT)
-    fp = sum(1 for r in results if r.passes and r.error_category != ErrorCategory.CORRECT)
-    fn = sum(1 for r in results if not r.passes and r.error_category == ErrorCategory.CORRECT)
+    # Functional accuracy metrics, over reviewed rows only.
+    correct = ErrorCategory.CORRECT.value
+    tp = sum(1 for r in results if r.final_category == correct)
+    fp = sum(1 for r in results if r.passes and r.final_category != correct)
+    fn = sum(1 for r in results if not r.passes and r.final_category == correct)
 
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0

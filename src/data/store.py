@@ -6,8 +6,31 @@ import json
 import sqlite3
 from pathlib import Path
 
-from ..models import AssertionRecord, AssertionType, ExperimentResult, ErrorCategory, TestRecord
+from ..models import (
+    AssertionRecord, AssertionType, ErrorCategory, ExecutionOutcome,
+    ExperimentResult, TestRecord,
+)
 from ..llm.types import LLMCall
+
+
+def _parse_outcome(value: str | None) -> ExecutionOutcome:
+    """Read a stored outcome, defaulting rows from before it existed."""
+    if not value:
+        return ExecutionOutcome.NOT_RUN
+    try:
+        return ExecutionOutcome(value)
+    except ValueError:
+        return ExecutionOutcome.NOT_RUN
+
+
+def _parse_category(value: str | None) -> ErrorCategory:
+    """Read a stored category, tolerating blanks and labels from older runs."""
+    if not value:
+        return ErrorCategory.PENDING
+    try:
+        return ErrorCategory(value)
+    except ValueError:
+        return ErrorCategory.PENDING
 
 
 class ResultStore:
@@ -36,11 +59,12 @@ class ResultStore:
                 gold_standard TEXT,
                 compiles INTEGER DEFAULT 0,
                 passes INTEGER DEFAULT 0,
+                outcome TEXT NOT NULL DEFAULT 'not_run',
+                error_type TEXT,
                 exact_match INTEGER DEFAULT 0,
                 error_category TEXT,
                 manual_error_category TEXT,
                 manual_notes TEXT,
-                llm_preclassification TEXT,
                 semantic_similarity REAL DEFAULT 0.0,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -119,11 +143,12 @@ class ResultStore:
                 gold_standard TEXT,
                 compiles INTEGER DEFAULT 0,
                 passes INTEGER DEFAULT 0,
+                outcome TEXT NOT NULL DEFAULT 'not_run',
+                error_type TEXT,
                 exact_match INTEGER DEFAULT 0,
                 error_category TEXT,
                 manual_error_category TEXT,
                 manual_notes TEXT,
-                llm_preclassification TEXT,
                 semantic_similarity REAL DEFAULT 0.0,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -134,13 +159,13 @@ class ResultStore:
                 (id, app, variant, version, class_name, method_name, treatment,
                  mode, model, prompt, raw_response, generated_assertion,
                  gold_standard, compiles, passes, exact_match, error_category,
-                 manual_error_category, manual_notes, llm_preclassification,
+                 manual_error_category, manual_notes,
                  semantic_similarity, notes, created_at)
             SELECT
                 id, app, variant, version, class_name, method_name, treatment,
                 'cumulative', model, prompt, raw_response, generated_assertion,
                 gold_standard, compiles, passes, exact_match, error_category,
-                manual_error_category, manual_notes, llm_preclassification,
+                manual_error_category, manual_notes,
                 semantic_similarity, notes, created_at
             FROM experiments;
 
@@ -160,7 +185,8 @@ class ResultStore:
         column_defs = {
             "manual_error_category": "TEXT",
             "manual_notes": "TEXT",
-            "llm_preclassification": "TEXT",
+            "outcome": "TEXT NOT NULL DEFAULT 'not_run'",
+            "error_type": "TEXT",
         }
         for column, definition in column_defs.items():
             if column not in existing:
@@ -186,15 +212,17 @@ class ResultStore:
             INSERT OR REPLACE INTO experiments
             (app, variant, version, class_name, method_name, treatment, mode, model,
              prompt, raw_response, generated_assertion, gold_standard,
-             compiles, passes, exact_match, error_category, semantic_similarity, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             compiles, passes, outcome, error_type, exact_match, error_category,
+             semantic_similarity, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["app"], data["variant"], data["version"],
             data["class_name"], data["method_name"],
             data["treatment"], data["mode"], data["model"],
             result.prompt, result.raw_response,
             data["generated_assertion"], data["gold_standard"],
-            int(data["compiles"]), int(data["passes"]), int(data["exact_match"]),
+            int(data["compiles"]), int(data["passes"]),
+            data["outcome"], data["error_type"], int(data["exact_match"]),
             data["error_category"], data["semantic_similarity"], data["notes"],
         ))
         self.conn.commit()
@@ -357,7 +385,6 @@ class ResultStore:
                 e.semantic_similarity,
                 e.error_category,
                 e.manual_error_category,
-                e.llm_preclassification,
                 e.compiles,
                 e.passes
             FROM experiments e
@@ -401,38 +428,32 @@ class ResultStore:
                 generated_assertion=row.get("generated_assertion", "") or "",
                 compiles=bool(row.get("compiles", 0)),
                 passes=bool(row.get("passes", 0)),
+                outcome=_parse_outcome(row.get("outcome")),
+                error_type=row.get("error_type") or "",
                 exact_match=bool(row.get("exact_match", 0)),
-                error_category=ErrorCategory(row.get("error_category", "not_executable")),
+                error_category=_parse_category(row.get("error_category")),
+                manual_error_category=row.get("manual_error_category") or "",
                 semantic_similarity=row.get("semantic_similarity", 0.0) or 0.0,
                 notes=row.get("notes", "") or "",
             ))
         return results
 
     def update_classification(self, app: str, class_name: str, treatment: str, model: str,
-                              error_category: str, notes: str = "") -> bool:
-        """Update manual annotation fields without overwriting automatic classification."""
-        cursor = self.conn.execute(
-            "UPDATE experiments SET manual_error_category=?, manual_notes=? "
-            "WHERE app=? AND class_name=? AND treatment=? AND model=?",
-            (error_category, notes, app, class_name, treatment, model),
-        )
-        self.conn.commit()
-        return cursor.rowcount > 0
+                              error_category: str, notes: str = "",
+                              mode: str | None = None) -> bool:
+        """Store a reviewed classification for one result.
 
-    def update_llm_preclassification(
-        self,
-        app: str,
-        class_name: str,
-        treatment: str,
-        model: str,
-        llm_preclassification: str,
-    ) -> bool:
-        """Store an LLM pre-classification suggestion separately from final labels."""
-        cursor = self.conn.execute(
-            "UPDATE experiments SET llm_preclassification=? "
-            "WHERE app=? AND class_name=? AND treatment=? AND model=?",
-            (llm_preclassification, app, class_name, treatment, model),
-        )
+        ``mode`` is optional so older callers keep working, but passing it keeps
+        the two experiment designs from overwriting each other's labels when
+        both are present in the database.
+        """
+        sql = ("UPDATE experiments SET manual_error_category=?, manual_notes=? "
+               "WHERE app=? AND class_name=? AND treatment=? AND model=?")
+        values = [error_category, notes, app, class_name, treatment, model]
+        if mode:
+            sql += " AND mode=?"
+            values.append(mode)
+        cursor = self.conn.execute(sql, values)
         self.conn.commit()
         return cursor.rowcount > 0
 

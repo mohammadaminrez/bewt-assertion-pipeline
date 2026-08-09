@@ -74,7 +74,7 @@ def _write_metrics_csv(metrics: dict[str, AggregateMetrics], path: Path) -> None
     fieldnames = [
         "group", "total", "compiles", "passes", "exact_matches",
         "avg_semantic_similarity", "precision", "recall", "f1_score",
-        "correct", "over_assertive", "under_assertive", "wrong_assertion", "not_executable",
+        "correct", "over_assertive", "under_assertive", "wrong_assertion", "not_executable", "pending",
     ]
 
     with open(path, 'w', newline='') as f:
@@ -92,7 +92,7 @@ def _write_metrics_csv(metrics: dict[str, AggregateMetrics], path: Path) -> None
                 "recall": f"{m.recall:.4f}",
                 "f1_score": f"{m.f1_score:.4f}",
             }
-            for cat in ["correct", "over_assertive", "under_assertive", "wrong_assertion", "not_executable"]:
+            for cat in ["correct", "over_assertive", "under_assertive", "wrong_assertion", "not_executable", "pending"]:
                 row[cat] = m.error_distribution.get(cat, 0)
             writer.writerow(row)
 
@@ -142,7 +142,7 @@ def write_latex_tables(results: list[ExperimentResult], output_dir: Path) -> Non
 
     for treatment in sorted(treatment_metrics.keys()):
         m = treatment_metrics[treatment]
-        cats = ["correct", "over_assertive", "under_assertive", "wrong_assertion", "not_executable"]
+        cats = ["correct", "over_assertive", "under_assertive", "wrong_assertion", "not_executable", "pending"]
         vals = [str(m.error_distribution.get(c, 0)) for c in cats]
         latex += f"{treatment} & {' & '.join(vals)} \\\\\n"
 

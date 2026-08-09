@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Run Maven tests and capture results."""
 
+import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -27,15 +28,32 @@ class CompileResult:
     errors: list[str]
 
 
-def compile_project(project_path: Path) -> CompileResult:
+COMPILE_TIMEOUT = 300
+SUITE_TIMEOUT = 3600
+SINGLE_TEST_TIMEOUT = 600
+
+
+def _clear_surefire_reports(project_path: Path) -> None:
+    """Delete previous Surefire reports so only this run's results are parsed."""
+    reports_dir = project_path / "target" / "surefire-reports"
+    if reports_dir.exists():
+        shutil.rmtree(reports_dir, ignore_errors=True)
+
+
+def compile_project(project_path: Path, timeout: int = COMPILE_TIMEOUT) -> CompileResult:
     """Compile the Maven project and return the result."""
-    result = subprocess.run(
-        ["mvn", "compile", "test-compile", "-q"],
-        cwd=str(project_path),
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    try:
+        result = subprocess.run(
+            ["mvn", "compile", "test-compile", "-q"],
+            cwd=str(project_path),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return CompileResult(success=False, errors=[f"Compilation timed out after {timeout}s"])
+    except FileNotFoundError:
+        return CompileResult(success=False, errors=["Maven ('mvn') not found on PATH"])
 
     if result.returncode == 0:
         return CompileResult(success=True, errors=[])
@@ -49,66 +67,77 @@ def compile_project(project_path: Path) -> CompileResult:
     return CompileResult(success=False, errors=errors)
 
 
-def run_test_suite(project_path: Path, timeout: int = 300) -> list[TestResult]:
-    """Run the full test suite and return results for each test."""
-    result = subprocess.run(
-        ["mvn", "test", "-Dtest=TestSuite"],
-        cwd=str(project_path),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+def _run_maven_tests(project_path: Path, selector: str, timeout: int) -> tuple[list[TestResult], str]:
+    """Run `mvn test` for a selector and parse the reports it produces.
 
-    # Parse surefire reports
-    reports_dir = project_path / "target" / "surefire-reports"
-    return _parse_surefire_reports(reports_dir)
+    Returns the parsed results plus an error string, which is empty on a normal
+    run. Maven failing is not itself an error here — a failing test also exits
+    non-zero, and the Surefire reports carry the detail.
+    """
+    _clear_surefire_reports(project_path)
+    try:
+        subprocess.run(
+            ["mvn", "test", f"-Dtest={selector}"],
+            cwd=str(project_path),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return _parse_surefire_reports(project_path / "target" / "surefire-reports"), (
+            f"Test run timed out after {timeout}s"
+        )
+    except FileNotFoundError:
+        return [], "Maven ('mvn') not found on PATH"
+
+    return _parse_surefire_reports(project_path / "target" / "surefire-reports"), ""
+
+
+def run_test_suite(project_path: Path, timeout: int = SUITE_TIMEOUT) -> list[TestResult]:
+    """Run the full test suite and return results for each test."""
+    results, _ = _run_maven_tests(project_path, "TestSuite", timeout)
+    return results
 
 
 def run_single_test(
     project_path: Path,
     test_class: str,
-    timeout: int = 120,
+    timeout: int = SINGLE_TEST_TIMEOUT,
 ) -> TestResult:
-    """Run a single test class and return the result."""
-    result = subprocess.run(
-        ["mvn", "test", f"-Dtest={test_class}"],
-        cwd=str(project_path),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    """Run a single test class and return the result.
 
-    reports_dir = project_path / "target" / "surefire-reports"
-    results = _parse_surefire_reports(reports_dir)
+    Note: BEWT tests depend on state created by earlier tests in TestSuite, so
+    this is only meaningful for tests with no preconditions. Use
+    ``run_suite_and_get_result`` for the general case.
+    """
+    results, error = _run_maven_tests(project_path, test_class, timeout)
 
-    # Find the specific test result
     for r in results:
         if r.test_class == test_class or r.test_class.endswith(f".{test_class}"):
             return r
 
-    # If not found in reports, construct from process result
     return TestResult(
         test_class=test_class,
         test_method="unknown",
-        passed=result.returncode == 0,
-        failed=result.returncode != 0,
-        errored=False,
+        passed=False,
+        failed=True,
+        errored=True,
         skipped=False,
-        error_message=result.stderr if result.returncode != 0 else "",
+        error_message=error or "Test result not found in surefire reports",
     )
 
 
 def run_suite_and_get_result(
     project_path: Path,
     target_class: str,
-    timeout: int = 300,
+    timeout: int = SUITE_TIMEOUT,
 ) -> TestResult:
     """Run the full test suite and return the result for a specific test class.
 
     This is needed because tests have dependencies — running a single test
     in isolation may fail due to missing state from previous tests.
     """
-    results = run_test_suite(project_path, timeout)
+    results, error = _run_maven_tests(project_path, "TestSuite", timeout)
 
     for r in results:
         if r.test_class == target_class or r.test_class.endswith(f".{target_class}"):
@@ -121,7 +150,7 @@ def run_suite_and_get_result(
         failed=True,
         errored=True,
         skipped=False,
-        error_message="Test result not found in surefire reports",
+        error_message=error or "Test result not found in surefire reports",
     )
 
 

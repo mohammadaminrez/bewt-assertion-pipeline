@@ -45,6 +45,9 @@ def _ensure_imports(source: str, assertion: str) -> str:
         needed_imports.add("import static org.junit.Assert.assertFalse;")
     if "assertNotNull" in assertion and "import static org.junit.Assert.assertNotNull" not in source:
         needed_imports.add("import static org.junit.Assert.assertNotNull;")
+    # assertNull needs a word-boundary check: "assertNotNull" must not match it.
+    if re.search(r"\bassertNull\s*\(", assertion) and "import static org.junit.Assert.assertNull;" not in source:
+        needed_imports.add("import static org.junit.Assert.assertNull;")
 
     if not needed_imports:
         return source
@@ -88,6 +91,70 @@ def _fix_java_version(project_path: Path) -> None:
     pom.write_text(text)
 
 
+def _test_file_path(work_dir: Path, record: TestRecord) -> Path:
+    """Where a record's test file lives inside a copied project."""
+    original = Path(record.file_path)
+    java_root = original.parent.parent  # up from the package dir to src/test/java
+    return work_dir / "src" / "test" / "java" / original.relative_to(java_root)
+
+
+def prepare_suite_copy(
+    config,
+    app: str,
+    records: list[TestRecord],
+    assertions: dict[str, str],
+    variant_sources: dict[str, str],
+    treatment: str,
+    model: str,
+) -> Path:
+    """Copy the project once with every generated assertion injected.
+
+    ``assertions`` maps class name -> generated assertion. Any record missing
+    from it keeps its gold-standard assertion, so it still sets up the state
+    that later tests in the suite depend on.
+    """
+    project_path = config.get_app_project_path(app)
+    work_dir = config.output_dir / "runs" / app / model / treatment / "_suite"
+
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    shutil.copytree(project_path, work_dir, ignore=shutil.ignore_patterns("target", ".git"))
+    _fix_java_version(work_dir)
+
+    for record in records:
+        generated = assertions.get(record.class_name)
+        if not generated:
+            continue
+        inject_assertion(
+            record, generated,
+            variant_sources.get(record.class_name, record.stripped_source),
+            _test_file_path(work_dir, record),
+        )
+
+    return work_dir
+
+
+def restore_gold_assertion(work_dir: Path, record: TestRecord) -> None:
+    """Put a test back to its original source, assertion included."""
+    path = _test_file_path(work_dir, record)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(record.full_source)
+
+
+def classes_with_compile_errors(errors: list[str], records: list[TestRecord]) -> set[str]:
+    """Work out which test classes the compiler complained about.
+
+    Maven reports the offending file path on each error line, so a class is
+    blamed only when its own file is named.
+    """
+    blamed = set()
+    for record in records:
+        needle = f"{record.class_name}.java"
+        if any(needle in line for line in errors):
+            blamed.add(record.class_name)
+    return blamed
+
+
 def prepare_project_copy(
     config,
     app: str,
@@ -107,15 +174,15 @@ def prepare_project_copy(
 
     if work_dir.exists():
         shutil.rmtree(work_dir)
-    shutil.copytree(project_path, work_dir)
+    # target/ is skipped deliberately: copying it would carry Surefire reports
+    # from an earlier run into the fresh work dir, where the report parser
+    # cannot tell them apart from this run's results.
+    shutil.copytree(project_path, work_dir, ignore=shutil.ignore_patterns("target", ".git"))
 
     _fix_java_version(work_dir)
 
-    # Write the injected test file into the correct package directory
-    original = Path(record.file_path)
-    java_root = original.parent.parent  # go up from package dir to src/test/java
-    rel_path = original.relative_to(java_root)
-    test_file = work_dir / "src" / "test" / "java" / rel_path
-    inject_assertion(record, generated_assertion, variant_source, test_file)
+    inject_assertion(
+        record, generated_assertion, variant_source, _test_file_path(work_dir, record)
+    )
 
     return work_dir
