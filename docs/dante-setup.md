@@ -6,6 +6,99 @@ Selenium-test-generation front-end for the LLM-assertion extension of this
 pipeline. DANTE bundles a 2020 fork of Crawljax plus shell scripts that turn
 crawl paths into JUnit/Selenium Maven projects.
 
+## How the whole thing works
+
+The extension turns the assertion pipeline into a fully automatic test-suite
+generator. Five stages, each feeding the next:
+
+```
+Crawljax explores app  →  state-flow graph  →  Selenium tests (no assertions)
+                                                        │
+        compare vs Crawljax oracles  ←  LLM writes the assertions
+```
+
+1. **Crawl** — Crawljax opens the app in a real Chrome, acts like a user
+   (clicks elements, fills forms from an `InputSpecification` — including the
+   login form), and builds a *state-flow graph*: nodes are distinct DOM states,
+   edges are the user actions between them. For every state it saves the full
+   DOM (`doms/<state>.html`) and a screenshot. Every action is also recorded as
+   replayable Java driver statements (`selenium-actions-<app>-fired.txt`, one
+   crawl path per `-----` block).
+2. **Generate** — DANTE's `TestSuiteGenerator` turns each recorded crawl path
+   into a JUnit 4 test method (raw Selenium replays, **no assertions**) inside
+   a standalone Maven project, `applications/<app>/testsuite-<app>/`.
+   Separately, the Crawljax `testcasegenerator` plugin emits the **oracle
+   suite** (`crawl-with-inputs/src/.../GeneratedTests.java`, TestNG): the same
+   paths asserted with invariants + whole-DOM/screenshot state-equivalence.
+   That suite is the comparison baseline.
+3. **Ingest** (`bewt-pipeline ingest-crawl`) — `src/ingest/dante.py` splits the
+   JUnit suite into one single-test class per path, inserts the pipeline's
+   standard `// TODO: Insert the missing assertion here` placeholder, walks
+   each path through the state-flow graph to find the state the test ends in
+   (its saved DOM = the "HTML at the assertion point"), and renders a
+   natural-language action trace. Output: `output/crawled/<app>/tests/` +
+   `state_map.json`.
+4. **Generate assertions** (`bewt-pipeline run --source crawled`) — for each
+   test × treatment the LLM is prompted to write the missing assertion:
+   - **A** — test code only
+   - **B** — + the action-trace comment
+   - **C** — + the crawled DOM of the reached state
+
+   With `--execute`, the assertion is injected back into a copy of the
+   generated Maven project, compiled (pinned JDK 8), and run with JUnitCore
+   against a freshly reset app container. Everything (prompts, tokens, cost,
+   results) lands in `output/results.db` with `source='crawled'`, kept apart
+   from the BEWT benchmark rows.
+5. **Evaluate** — crawled tests have no gold standard, so each LLM assertion is
+   judged on a meaningfulness rubric (`semantic` / `structural` /
+   `wrong_assertion` / `not_executable`) against the Crawljax oracle suite as
+   baseline: LLM pre-classification first, human review in Excel, final
+   comparison table in `reports/crawled_comparison.csv`.
+
+## Full run: all commands in order
+
+```bash
+# ── toolchain env (once per terminal; needed for every DANTE-side command) ──
+export JAVA_HOME=~/dante-tools/zulu8.96.0.205-ca-jdk8.0.504-macosx_aarch64/Contents/Home
+export PATH="$JAVA_HOME/bin:$HOME/dante-tools/apache-maven-3.6.0/bin:$PATH"
+export JAVA_TOOL_OPTIONS="-Dchrome.binary=$HOME/dante-tools/chrome-mac-arm64/cft.app/Contents/MacOS/chrome -Dcrawljax.reset.clearCookies=true"
+
+# ── 1. crawl + 2. generate (Docker must be running; clear old containers first) ──
+docker ps -aq --filter name=bludit | xargs -r docker rm -f
+cd ~/workspace/ICST20-submission-material-DANTE/dante
+./run-crawling.sh bludit true 10                       # true=headless (false = watch it), 10 = minutes
+./generate-java-project-from-crawling.sh bludit true
+
+# optional: visualize the state-flow graph (CrawlOverview's own viewer is dead in modern browsers)
+python3 ~/bewt-assertion-pipeline/scripts/make_crawl_graph.py \
+    applications/bludit/localhost/crawl-with-inputs
+(cd applications/bludit/localhost/crawl-with-inputs && python3 -m http.server 8765 &)
+open http://localhost:8765/graph.html
+
+# ── 3.–5. pipeline side ──
+cd ~/bewt-assertion-pipeline && source .venv/bin/activate
+
+bewt-pipeline ingest-crawl --app bludit                # split tests, placeholders, DOM map
+bewt-pipeline run --app bludit --source crawled \
+    --model gpt-4o-mini --execute                      # LLM assertions + live execution
+bewt-pipeline run-oracle-suite --app bludit            # Crawljax oracle baseline
+bewt-pipeline export-excel --source crawled --pre-classify   # judge + Excel for manual review
+bewt-pipeline import-excel --source crawled            # after annotating the Excel
+bewt-pipeline report                                   # → reports/crawled_comparison.csv
+```
+
+Useful along the way: `bewt-pipeline llm-usage --by source` (token/cost split),
+`bewt-pipeline show-prompt --app bludit --treatment C --latest` (exact prompt sent).
+
+Practical notes:
+
+- `run-crawling.sh` starts the app container itself and waits a fixed 60 s
+  before Chrome appears — the silence at the start is normal.
+- Re-running the crawl **overwrites** `selenium-actions-*.txt` and the crawl
+  output; back up `applications/<app>/` first if the previous crawl matters.
+- `run --source crawled` is resumable (stored results are skipped) and LLM
+  responses are disk-cached, so re-runs are cheap and safe.
+
 ## Layout
 
 | What | Where |
