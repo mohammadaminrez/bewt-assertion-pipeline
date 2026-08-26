@@ -427,10 +427,63 @@ def crawl(ctx, app, headless, minutes, skip_generate):
         click.echo(click.style("\nGeneration finished but suite file not found.", fg="red"))
 
 
+@main.command(name="run-oracle-suite")
+@click.option("--app", "-a", required=True, help="App whose Crawljax oracle suite to run")
+@click.pass_context
+def run_oracle_suite_cmd(ctx, app):
+    """Run the Crawljax oracle suite (baseline for the LLM-vs-oracle comparison)."""
+    from .execution.dante_runner import reset_crawled_app, run_oracle_suite
+
+    config = ctx.obj["config"]
+    click.echo(f"Resetting {app} to a fresh installed state...")
+    reset_crawled_app(config, app)
+
+    click.echo("Running Crawljax oracle suite (invariants + state-equivalence)...")
+    results = run_oracle_suite(config, app)
+    if not results:
+        raise click.ClickException(
+            f"No oracle suite found for {app} (expected GeneratedTests.java in the crawl output)."
+        )
+
+    outcome = {r.test_method: ("PASS" if r.passed else "SKIP" if r.skipped else "FAIL")
+               for r in results}
+    out_path = config.output_dir / "crawled" / app / "oracle_results.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(outcome, indent=2))
+
+    passed = sum(1 for s in outcome.values() if s == "PASS")
+    for method, status in outcome.items():
+        color = "green" if status == "PASS" else "red"
+        click.echo(f"  {method}: " + click.style(status, fg=color))
+    click.echo(f"\nOracle suite: {passed}/{len(outcome)} methods pass")
+    click.echo(f"Results saved to {out_path}")
+
+
+def _load_crawled_state_maps(config, apps: set[str]) -> dict[str, dict]:
+    """Merge state_map.json files for the given crawled apps."""
+    merged: dict[str, dict] = {}
+    for app in apps:
+        path = config.output_dir / "crawled" / app / "state_map.json"
+        if path.exists():
+            merged.update(json.loads(path.read_text()))
+    return merged
+
+
+def _load_oracle_results(config, apps: set[str]) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for app in apps:
+        path = config.output_dir / "crawled" / app / "oracle_results.json"
+        if path.exists():
+            merged.update(json.loads(path.read_text()))
+    return merged
+
+
 @main.command()
 @click.pass_context
 def report(ctx):
     """Generate reports from stored results."""
+    from .evaluation.reporter import write_crawled_comparison
+
     config = ctx.obj["config"]
     db_path = config.output_dir / "results.db"
     if not db_path.exists():
@@ -440,13 +493,33 @@ def report(ctx):
         )
 
     store = ResultStore(db_path)
-    results = store.load_experiment_results()
-    if not results:
+    all_results = store.load_experiment_results()
+    if not all_results:
         raise click.ClickException("No results found in database. Run the experiment first.")
 
-    click.echo(f"Found {len(results)} results")
-    generate_full_report(results, config.output_dir / "reports")
-    click.echo(f"Reports written to {config.output_dir / 'reports'}")
+    bewt_results = [r for r in all_results if r.source == "bewt"]
+    crawled_results = [r for r in all_results if r.source == "crawled"]
+    click.echo(f"Found {len(bewt_results)} benchmark results, {len(crawled_results)} crawled results")
+
+    if bewt_results:
+        generate_full_report(bewt_results, config.output_dir / "reports")
+        click.echo(f"Benchmark reports written to {config.output_dir / 'reports'}")
+
+    if crawled_results:
+        crawled_apps = {r.test_record.app for r in crawled_results}
+        manual = {
+            f"{row['app']}|{row['class_name']}|{row['treatment']}|{row['model']}":
+                row["manual_error_category"] or ""
+            for row in store.get_all_results()
+            if row.get("source") == "crawled"
+        }
+        write_crawled_comparison(
+            crawled_results,
+            config.output_dir / "reports",
+            oracle_results=_load_oracle_results(config, crawled_apps) or None,
+            manual_categories=manual,
+        )
+        click.echo(f"Crawled comparison written to {config.output_dir / 'reports' / 'crawled_comparison.csv'}")
 
     summary = store.get_summary()
     click.echo(json.dumps(summary, indent=2))
@@ -713,8 +786,10 @@ def info(ctx):
 @click.option("--output", "-o", type=click.Path(), default=None, help="Output .xlsx path")
 @click.option("--pre-classify", is_flag=True, default=False, help="Use LLM to pre-fill classification suggestions")
 @click.option("--model", "-m", default=None, help="Model for pre-classification (default: config default)")
+@click.option("--source", type=click.Choice(["bewt", "crawled"]), default="bewt",
+              help="Which results to export: bewt (gold-standard rubric) or crawled (meaningfulness rubric)")
 @click.pass_context
-def export_excel(ctx, output, pre_classify, model):
+def export_excel(ctx, output, pre_classify, model, source):
     """Export results to Excel for manual annotation."""
     config = ctx.obj["config"]
     db_path = config.output_dir / "results.db"
@@ -722,14 +797,22 @@ def export_excel(ctx, output, pre_classify, model):
         raise click.ClickException("No results database found. Run the experiment first.")
 
     store = ResultStore(db_path)
-    results = store.load_experiment_results()
+    results = [r for r in store.load_experiment_results() if r.source == source]
     if not results:
-        raise click.ClickException("No results found in database.")
+        raise click.ClickException(f"No {source} results found in database.")
+
+    state_map: dict[str, dict] = {}
+    if source == "crawled":
+        crawled_apps = {r.test_record.app for r in results}
+        state_map = _load_crawled_state_maps(config, crawled_apps)
 
     pre_classifications = None
     if pre_classify:
         from .llm.client import create_client
-        from .evaluation.llm_classifier import pre_classify_results
+        from .evaluation.llm_classifier import (
+            pre_classify_results,
+            pre_classify_crawled_results,
+        )
 
         model_name = model or config.default_model
         _validate_api_keys(config, [model_name])
@@ -739,9 +822,15 @@ def export_excel(ctx, output, pre_classify, model):
         def on_progress(completed, total, message):
             click.echo(f"  [{completed}/{total}] {message}")
 
-        pre_classifications = pre_classify_results(
-            results, llm, on_progress=on_progress, store=store, classifier_model=model_name
-        )
+        if source == "crawled":
+            pre_classifications = pre_classify_crawled_results(
+                results, llm, state_map, on_progress=on_progress,
+                store=store, classifier_model=model_name,
+            )
+        else:
+            pre_classifications = pre_classify_results(
+                results, llm, on_progress=on_progress, store=store, classifier_model=model_name
+            )
         for key, classification in pre_classifications.items():
             if not classification:
                 continue
@@ -752,27 +841,45 @@ def export_excel(ctx, output, pre_classify, model):
                 treatment=treatment_name,
                 model=result_model,
                 llm_preclassification=classification,
+                source=source,
             )
         click.echo(f"Pre-classification complete.")
 
-    output_path = Path(output) if output else config.output_dir / "reports" / "manual_evaluation.xlsx"
-    export_results_to_excel(results, output_path, pre_classifications=pre_classifications)
+    default_name = "manual_evaluation_crawled.xlsx" if source == "crawled" else "manual_evaluation.xlsx"
+    output_path = Path(output) if output else config.output_dir / "reports" / default_name
+
+    if source == "crawled":
+        from .evaluation.excel_export import export_crawled_results_to_excel
+
+        crawled_apps = {r.test_record.app for r in results}
+        oracle_results = _load_oracle_results(config, crawled_apps) or None
+        export_crawled_results_to_excel(
+            results, output_path, state_map,
+            pre_classifications=pre_classifications,
+            oracle_results=oracle_results,
+        )
+    else:
+        export_results_to_excel(results, output_path, pre_classifications=pre_classifications)
+
     click.echo(f"Exported {len(results)} results to {output_path}")
-    click.echo("Fill in the 'Manual Classification' column, then run: bewt-pipeline import-excel")
+    click.echo(f"Fill in the 'Manual Classification' column, then run: bewt-pipeline import-excel --source {source}")
     store.close()
 
 
 @main.command(name="import-excel")
 @click.option("--input", "-i", "input_path", type=click.Path(exists=True), default=None, help="Annotated .xlsx path")
+@click.option("--source", type=click.Choice(["bewt", "crawled"]), default="bewt",
+              help="Which results the annotations belong to")
 @click.pass_context
-def import_excel(ctx, input_path):
+def import_excel(ctx, input_path, source):
     """Import manual classifications from an annotated Excel file back into the database."""
     config = ctx.obj["config"]
     db_path = config.output_dir / "results.db"
     if not db_path.exists():
         raise click.ClickException("No results database found.")
 
-    excel_path = Path(input_path) if input_path else config.output_dir / "reports" / "manual_evaluation.xlsx"
+    default_name = "manual_evaluation_crawled.xlsx" if source == "crawled" else "manual_evaluation.xlsx"
+    excel_path = Path(input_path) if input_path else config.output_dir / "reports" / default_name
     if not excel_path.exists():
         raise click.ClickException(f"Excel file not found: {excel_path}")
 
@@ -788,6 +895,7 @@ def import_excel(ctx, input_path):
             treatment=a["treatment"], model=a["model"],
             error_category=a["manual_classification"],
             notes=a["manual_notes"],
+            source=source,
         ):
             updated += 1
 

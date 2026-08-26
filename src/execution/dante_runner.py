@@ -42,6 +42,77 @@ def _toolchain_env() -> dict[str, str]:
     return env
 
 
+def run_oracle_suite(config, app: str, timeout: int = 3600) -> list[TestResult]:
+    """Compile and run the Crawljax oracle suite (GeneratedTests, TestNG).
+
+    This is the baseline in the LLM-vs-Crawljax-oracles comparison: each test
+    method replays one crawl path and asserts invariants + DOM/screenshot
+    state-equivalence after every event. Results are parsed from TestNG's
+    ``test-output/testng-results.xml``.
+    """
+    import xml.etree.ElementTree as ET
+
+    crawl_dir = config.get_dante_crawl_dir(app)
+    libs = config.dante_repo_path / "crawljax" / "libs"
+    plugin_classes = (config.dante_repo_path / "crawljax" / "plugins"
+                      / "testcasegenerator-plugin" / "target" / "classes")
+    generated_src = crawl_dir / "src" / "test" / "java"
+    generated_test = generated_src / "generated" / "GeneratedTests.java"
+
+    if not generated_test.exists():
+        return []
+
+    env = _toolchain_env()
+    classpath = f"{libs}/*:{plugin_classes}:{generated_src}"
+
+    compile_res = subprocess.run(
+        ["javac", "-cp", classpath, str(generated_test)],
+        capture_output=True, text=True, timeout=300, env=env,
+    )
+    if compile_res.returncode != 0:
+        return [TestResult(
+            test_class="generated.GeneratedTests", test_method="compile",
+            passed=False, failed=True, errored=True, skipped=False,
+            error_message=compile_res.stderr[:1000],
+        )]
+
+    subprocess.run(
+        ["java", "-cp", classpath, "org.testng.TestNG", "testng.xml"],
+        cwd=str(crawl_dir), capture_output=True, text=True,
+        timeout=timeout, env=env,
+    )
+
+    results_xml = crawl_dir / "test-output" / "testng-results.xml"
+    if not results_xml.exists():
+        return [TestResult(
+            test_class="generated.GeneratedTests", test_method="suite",
+            passed=False, failed=True, errored=True, skipped=False,
+            error_message="testng-results.xml not produced",
+        )]
+
+    results: list[TestResult] = []
+    root = ET.parse(results_xml).getroot()
+    for method in root.iter("test-method"):
+        if method.get("is-config") == "true":
+            continue
+        name = method.get("name", "")
+        status = method.get("status", "")
+        message = ""
+        exception = method.find(".//message")
+        if exception is not None and exception.text:
+            message = exception.text.strip()[:1000]
+        results.append(TestResult(
+            test_class="generated.GeneratedTests",
+            test_method=name,
+            passed=status == "PASS",
+            failed=status == "FAIL",
+            errored=False,
+            skipped=status == "SKIP",
+            error_message=message,
+        ))
+    return results
+
+
 def reset_crawled_app(config, app: str, timeout: int = 300) -> bool:
     """Reset the app to a fresh installed state via DANTE's docker runner.
 

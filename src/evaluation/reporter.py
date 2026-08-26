@@ -38,6 +38,68 @@ def generate_full_report(results: list[ExperimentResult], output_dir: Path) -> N
 
 
 
+def write_crawled_comparison(
+    results: list[ExperimentResult],
+    output_dir: Path,
+    oracle_results: dict[str, str] | None = None,
+    manual_categories: dict[str, str] | None = None,
+) -> None:
+    """Write the LLM-vs-Crawljax-oracle comparison for crawled tests.
+
+    Per treatment: how many LLM assertions compile / hold on the live app, and
+    the meaningfulness category distribution (manual if available, else the
+    LLM judge's suggestion). The Crawljax oracle suite's pass rate is included
+    as the baseline row.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    crawled = [r for r in results if r.source == "crawled"]
+    if not crawled:
+        return
+
+    categories = ["semantic", "structural", "wrong_assertion", "not_executable"]
+    by_treatment: dict[str, list[ExperimentResult]] = {}
+    for r in crawled:
+        by_treatment.setdefault(r.treatment, []).append(r)
+
+    rows = []
+    for treatment in sorted(by_treatment):
+        rs = by_treatment[treatment]
+        counts = {c: 0 for c in categories}
+        counts["unlabeled"] = 0
+        for r in rs:
+            key = f"{r.test_record.app}|{r.test_record.class_name}|{r.treatment}|{r.model}"
+            label = (manual_categories or {}).get(key, "")
+            if label in counts:
+                counts[label] += 1
+            else:
+                counts["unlabeled"] += 1
+        rows.append({
+            "oracle": f"LLM assertions (treatment {treatment})",
+            "total": len(rs),
+            "compiles": sum(1 for r in rs if r.compiles),
+            "holds_on_live_app": sum(1 for r in rs if r.passes),
+            **counts,
+        })
+
+    if oracle_results:
+        passed = sum(1 for s in oracle_results.values() if s == "PASS")
+        rows.append({
+            "oracle": "Crawljax oracle suite (invariants + state-equivalence)",
+            "total": len(oracle_results),
+            "compiles": len(oracle_results),
+            "holds_on_live_app": passed,
+            **{c: "" for c in categories},
+            "unlabeled": "",
+        })
+
+    fieldnames = ["oracle", "total", "compiles", "holds_on_live_app",
+                  *categories, "unlabeled"]
+    with open(output_dir / "crawled_comparison.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def write_raw_csv(results: list[ExperimentResult], path: Path) -> None:
     """Write raw results to CSV."""
     if not results:
