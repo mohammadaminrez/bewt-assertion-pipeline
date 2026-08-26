@@ -83,3 +83,4 @@ apps:
 
 bewt_repo_path: "../BEWT"
 output_dir: "./output"
+dante_repo_path: "~/dante"

@@ -33,6 +33,26 @@ class Config:
         return Path(self._apps["output_dir"]).resolve()
 
     @property
+    def dante_repo_path(self) -> Path:
+        """Root of the DANTE clone (crawling + test-suite generation front-end)."""
+        return Path(self._apps.get("dante_repo_path", "../dante")).expanduser().resolve()
+
+    def get_dante_suite_path(self, app: str) -> Path:
+        """DANTE-generated JUnit suite (assertion-less replays) for an app."""
+        return (self.dante_repo_path / "dante" / "applications" / app
+                / f"testsuite-{app}" / "src" / "main" / "java" / "tests"
+                / "GeneratedTestSuiteFired.java")
+
+    def get_dante_testsuite_project_path(self, app: str) -> Path:
+        """The generated Maven project the crawled tests execute in."""
+        return self.dante_repo_path / "dante" / "applications" / app / f"testsuite-{app}"
+
+    def get_dante_crawl_dir(self, app: str) -> Path:
+        """Crawl output: result.json (state-flow graph), doms/, oracle suite."""
+        return (self.dante_repo_path / "dante" / "applications" / app
+                / "localhost" / "crawl-with-inputs")
+
+    @property
     def models(self) -> dict:
         return self._models["models"]
 
