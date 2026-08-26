@@ -45,8 +45,7 @@ Two macOS quirks:
 
 ## Patches applied to the DANTE clone
 
-Both patches make the Chrome binary overridable via the `chrome.binary` system
-property (unset = default behavior, upstream-safe):
+All patches are opt-in via system properties (unset = original behavior):
 
 1. `crawljax/core/src/main/java/com/crawljax/browser/WebDriverBrowserBuilder.java`
    — in `newChromeBrowser`, `optionsChrome.setBinary(...)` when
@@ -54,6 +53,42 @@ property (unset = default behavior, upstream-safe):
 2. `dante/src/main/resources/staticfiles/DriverProvider.java` — same override in
    the static file copied into every *generated* test-suite project (used when
    generated suites are executed).
+3. `crawljax/core/src/main/java/com/crawljax/core/Crawler.java` — in `reset()`,
+   delete all browser cookies when `-Dcrawljax.reset.clearCookies=true`. Needed
+   for apps with server-side login sessions (Bludit): without it, the session
+   cookie survives resets, every reset lands on the dashboard instead of the
+   login page, earlier states become unreachable, and the crawl exhausts after
+   a handful of states.
+
+## Bludit as a DANTE subject (added for this project)
+
+Registered in the DANTE clone: `ApplicationNames.Name.BLUDIT`,
+`com.dante.subjects.config.BluditConfig`, dispatch in `SetupApp`,
+`docker/bludit/run-docker.sh` (runs `bludit/docker:3.13.1` and completes the
+install wizard via a plain HTTP POST — password `e2eW3Bt3s71nGB3nchM4rK`), and
+the `bludit` app name + fired-strategy entries in `run-crawling.sh` /
+`generate-java-project-from-crawling.sh`.
+
+`BluditConfig` essentials, learned the hard way:
+
+- Seed URL is the admin panel (`http://localhost:8080/admin/`); an
+  `InputSpecification` fills `#jsusername`/`#jspassword` before any submit
+  button is clicked, so login happens as a normal crawl action.
+- **CSRF stripping is mandatory**: Bludit embeds a fresh 40-hex `tokenCSRF` in
+  every response (hidden input, hrefs, inline JS). Without a `RegexComparator`
+  stripping it, every page load is a "new" DOM state — the first crawl attempt
+  produced 328 states, 0 edges, 0 crawl paths. With stripping + cookie-clearing
+  resets the crawl explores normally.
+- `dontClick` rules exclude the logout link and `/install.php`.
+
+Crawl command (after the toolchain env above):
+
+```bash
+export JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS -Dcrawljax.reset.clearCookies=true"
+cd ~/workspace/ICST20-submission-material-DANTE/dante
+./run-crawling.sh bludit true 10
+./generate-java-project-from-crawling.sh bludit true
+```
 
 ## Install steps performed
 
