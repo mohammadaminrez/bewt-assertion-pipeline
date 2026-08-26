@@ -29,6 +29,7 @@ class ResultStore:
                 method_name TEXT NOT NULL,
                 treatment TEXT NOT NULL,
                 mode TEXT NOT NULL DEFAULT 'cumulative',
+                source TEXT NOT NULL DEFAULT 'bewt',
                 model TEXT NOT NULL,
                 prompt TEXT,
                 raw_response TEXT,
@@ -44,7 +45,7 @@ class ResultStore:
                 semantic_similarity REAL DEFAULT 0.0,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(app, version, class_name, treatment, model, mode)
+                UNIQUE(app, version, class_name, treatment, model, mode, source)
             );
 
             CREATE INDEX IF NOT EXISTS idx_experiments_app ON experiments(app);
@@ -60,6 +61,7 @@ class ResultStore:
                 method_name TEXT NOT NULL,
                 treatment TEXT NOT NULL,
                 mode TEXT NOT NULL DEFAULT 'cumulative',
+                source TEXT NOT NULL DEFAULT 'bewt',
                 model TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 system_prompt TEXT NOT NULL,
@@ -87,6 +89,7 @@ class ResultStore:
         """)
         self._ensure_experiment_columns()
         self._migrate_experiments_add_mode()
+        self._migrate_experiments_add_source()
         self._ensure_llm_call_columns()
         self.conn.commit()
 
@@ -153,6 +156,70 @@ class ResultStore:
             CREATE INDEX IF NOT EXISTS idx_experiments_mode ON experiments(mode);
         """)
 
+    def _migrate_experiments_add_source(self) -> None:
+        """Add the `source` column to pre-existing experiments tables.
+
+        The uniqueness key grows to include `source` (bewt | crawled), so the
+        table is rebuilt like the `mode` migration; old rows are backfilled as
+        the original BEWT-benchmark provenance.
+        """
+        rows = self.conn.execute("PRAGMA table_info(experiments)").fetchall()
+        if any(row["name"] == "source" for row in rows):
+            return
+
+        self.conn.executescript("""
+            CREATE TABLE experiments_new_src (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app TEXT NOT NULL,
+                variant TEXT NOT NULL,
+                version TEXT NOT NULL,
+                class_name TEXT NOT NULL,
+                method_name TEXT NOT NULL,
+                treatment TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'cumulative',
+                source TEXT NOT NULL DEFAULT 'bewt',
+                model TEXT NOT NULL,
+                prompt TEXT,
+                raw_response TEXT,
+                generated_assertion TEXT,
+                gold_standard TEXT,
+                compiles INTEGER DEFAULT 0,
+                passes INTEGER DEFAULT 0,
+                exact_match INTEGER DEFAULT 0,
+                error_category TEXT,
+                manual_error_category TEXT,
+                manual_notes TEXT,
+                llm_preclassification TEXT,
+                semantic_similarity REAL DEFAULT 0.0,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(app, version, class_name, treatment, model, mode, source)
+            );
+
+            INSERT INTO experiments_new_src
+                (id, app, variant, version, class_name, method_name, treatment,
+                 mode, source, model, prompt, raw_response, generated_assertion,
+                 gold_standard, compiles, passes, exact_match, error_category,
+                 manual_error_category, manual_notes, llm_preclassification,
+                 semantic_similarity, notes, created_at)
+            SELECT
+                id, app, variant, version, class_name, method_name, treatment,
+                mode, 'bewt', model, prompt, raw_response, generated_assertion,
+                gold_standard, compiles, passes, exact_match, error_category,
+                manual_error_category, manual_notes, llm_preclassification,
+                semantic_similarity, notes, created_at
+            FROM experiments;
+
+            DROP TABLE experiments;
+            ALTER TABLE experiments_new_src RENAME TO experiments;
+
+            CREATE INDEX IF NOT EXISTS idx_experiments_app ON experiments(app);
+            CREATE INDEX IF NOT EXISTS idx_experiments_treatment ON experiments(treatment);
+            CREATE INDEX IF NOT EXISTS idx_experiments_model ON experiments(model);
+            CREATE INDEX IF NOT EXISTS idx_experiments_mode ON experiments(mode);
+            CREATE INDEX IF NOT EXISTS idx_experiments_source ON experiments(source);
+        """)
+
     def _ensure_experiment_columns(self) -> None:
         """Add newly introduced experiments columns to existing SQLite databases."""
         rows = self.conn.execute("PRAGMA table_info(experiments)").fetchall()
@@ -174,6 +241,7 @@ class ResultStore:
             "cache_creation_input_tokens": "INTEGER",
             "cache_read_input_tokens": "INTEGER",
             "mode": "TEXT NOT NULL DEFAULT 'cumulative'",
+            "source": "TEXT NOT NULL DEFAULT 'bewt'",
         }
         for column, definition in column_defs.items():
             if column not in existing:
@@ -184,14 +252,14 @@ class ResultStore:
         data = result.to_dict()
         self.conn.execute("""
             INSERT OR REPLACE INTO experiments
-            (app, variant, version, class_name, method_name, treatment, mode, model,
+            (app, variant, version, class_name, method_name, treatment, mode, source, model,
              prompt, raw_response, generated_assertion, gold_standard,
              compiles, passes, exact_match, error_category, semantic_similarity, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["app"], data["variant"], data["version"],
             data["class_name"], data["method_name"],
-            data["treatment"], data["mode"], data["model"],
+            data["treatment"], data["mode"], data["source"], data["model"],
             result.prompt, result.raw_response,
             data["generated_assertion"], data["gold_standard"],
             int(data["compiles"]), int(data["passes"]), int(data["exact_match"]),
@@ -227,12 +295,12 @@ class ResultStore:
         return [dict(row) for row in rows]
 
     def has_result(self, app: str, version: str, class_name: str, treatment: str,
-                   model: str, mode: str = "cumulative") -> bool:
+                   model: str, mode: str = "cumulative", source: str = "bewt") -> bool:
         """Check if a result already exists (for resumability)."""
         row = self.conn.execute(
             "SELECT 1 FROM experiments WHERE app=? AND version=? AND class_name=? "
-            "AND treatment=? AND model=? AND mode=?",
-            (app, version, class_name, treatment, model, mode),
+            "AND treatment=? AND model=? AND mode=? AND source=?",
+            (app, version, class_name, treatment, model, mode, source),
         ).fetchone()
         return row is not None
 
@@ -265,15 +333,16 @@ class ResultStore:
         data = call.to_dict()
         cursor = self.conn.execute("""
             INSERT INTO llm_calls
-            (experiment_id, call_type, app, class_name, method_name, treatment, mode, model, provider,
+            (experiment_id, call_type, app, class_name, method_name, treatment, mode, source, model, provider,
              system_prompt, user_prompt, prompt_hash, raw_response,
              input_tokens, output_tokens, total_tokens, cached_input_tokens,
              cache_creation_input_tokens, cache_read_input_tokens,
              reasoning_tokens, cost_usd, latency_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["experiment_id"], data["call_type"], data["app"], data["class_name"],
-            data["method_name"], data["treatment"], data["mode"], data["model"], data["provider"],
+            data["method_name"], data["treatment"], data["mode"], data["source"],
+            data["model"], data["provider"],
             data["system_prompt"], data["user_prompt"], data["prompt_hash"], data["raw_response"],
             data["input_tokens"], data["output_tokens"], data["total_tokens"],
             data["cached_input_tokens"], data["cache_creation_input_tokens"],
@@ -292,6 +361,7 @@ class ResultStore:
         treatment: str | None = None,
         model: str | None = None,
         mode: str | None = None,
+        source: str | None = None,
     ) -> list[dict]:
         """Get LLM call traces, optionally filtered by research metadata."""
         filters = {
@@ -301,6 +371,7 @@ class ResultStore:
             "treatment": treatment,
             "model": model,
             "mode": mode,
+            "source": source,
         }
         clauses = [f"{key} = ?" for key, value in filters.items() if value is not None]
         values = [value for value in filters.values() if value is not None]
@@ -313,7 +384,7 @@ class ResultStore:
 
     def get_llm_usage_summary(self, group_by: str | None = None) -> list[dict]:
         """Summarize token/cost usage for logged LLM calls."""
-        allowed = {None, "treatment", "model", "app", "call_type", "mode"}
+        allowed = {None, "treatment", "model", "app", "call_type", "mode", "source"}
         if group_by not in allowed:
             raise ValueError(f"group_by must be one of: {', '.join(sorted(v for v in allowed if v))}")
 
@@ -347,6 +418,7 @@ class ResultStore:
                 e.method_name,
                 e.treatment,
                 e.mode,
+                e.source,
                 e.model,
                 c.input_tokens,
                 c.output_tokens,
@@ -396,6 +468,7 @@ class ResultStore:
                 test_record=record,
                 treatment=row["treatment"], model=row["model"],
                 mode=row["mode"] if "mode" in row.keys() else "cumulative",
+                source=row["source"] if "source" in row.keys() else "bewt",
                 prompt=row.get("prompt", "") or "",
                 raw_response=row.get("raw_response", "") or "",
                 generated_assertion=row.get("generated_assertion", "") or "",
@@ -409,13 +482,18 @@ class ResultStore:
         return results
 
     def update_classification(self, app: str, class_name: str, treatment: str, model: str,
-                              error_category: str, notes: str = "") -> bool:
+                              error_category: str, notes: str = "",
+                              source: str | None = None) -> bool:
         """Update manual annotation fields without overwriting automatic classification."""
-        cursor = self.conn.execute(
+        query = (
             "UPDATE experiments SET manual_error_category=?, manual_notes=? "
-            "WHERE app=? AND class_name=? AND treatment=? AND model=?",
-            (error_category, notes, app, class_name, treatment, model),
+            "WHERE app=? AND class_name=? AND treatment=? AND model=?"
         )
+        params: list = [error_category, notes, app, class_name, treatment, model]
+        if source is not None:
+            query += " AND source=?"
+            params.append(source)
+        cursor = self.conn.execute(query, params)
         self.conn.commit()
         return cursor.rowcount > 0
 
@@ -426,13 +504,18 @@ class ResultStore:
         treatment: str,
         model: str,
         llm_preclassification: str,
+        source: str | None = None,
     ) -> bool:
         """Store an LLM pre-classification suggestion separately from final labels."""
-        cursor = self.conn.execute(
+        query = (
             "UPDATE experiments SET llm_preclassification=? "
-            "WHERE app=? AND class_name=? AND treatment=? AND model=?",
-            (llm_preclassification, app, class_name, treatment, model),
+            "WHERE app=? AND class_name=? AND treatment=? AND model=?"
         )
+        params: list = [llm_preclassification, app, class_name, treatment, model]
+        if source is not None:
+            query += " AND source=?"
+            params.append(source)
+        cursor = self.conn.execute(query, params)
         self.conn.commit()
         return cursor.rowcount > 0
 

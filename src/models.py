@@ -114,6 +114,7 @@ class ExperimentResult:
     semantic_similarity: float = 0.0
     notes: str = ""
     mode: str = "cumulative"  # experiment design: cumulative | singular
+    source: str = "bewt"      # test provenance: bewt (benchmark) | crawled (DANTE/Crawljax)
 
     def to_dict(self) -> dict:
         return {
@@ -124,6 +125,7 @@ class ExperimentResult:
             "method_name": self.test_record.method_name,
             "treatment": self.treatment,
             "mode": self.mode,
+            "source": self.source,
             "model": self.model,
             "generated_assertion": self.generated_assertion,
             "gold_standard": self.test_record.gold_standard,

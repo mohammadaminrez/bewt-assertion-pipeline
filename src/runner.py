@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Core experiment runner — no CLI dependency. Can be called from notebooks."""
 
+from pathlib import Path
 from typing import Callable
 
 from .config import Config
@@ -34,6 +35,7 @@ def _build_generation_call(
     response: LLMResponse,
     experiment_id: int | None = None,
     mode: str = "cumulative",
+    source: str = "bewt",
 ) -> LLMCall:
     return LLMCall(
         experiment_id=experiment_id,
@@ -43,6 +45,7 @@ def _build_generation_call(
         method_name=record.method_name,
         treatment=treatment,
         mode=mode,
+        source=source,
         model=model_name,
         provider=response.provider,
         system_prompt=system,
@@ -281,6 +284,183 @@ def run_experiment(
     # Generate reports
     if all_results:
         generate_full_report(all_results, config.output_dir / "reports")
+
+    store.close()
+    flush_observability()
+    return all_results
+
+
+def run_crawled_experiment(
+    config: Config,
+    app: str,
+    models: list[str] | None = None,
+    treatments: tuple[str, ...] = ("A", "B", "C"),
+    execute: bool = False,
+    on_progress: ProgressCallback | None = None,
+    limit: int | None = None,
+    mode: str = "cumulative",
+) -> list[ExperimentResult]:
+    """Run the assertion-generation pipeline on crawler-generated (DANTE) tests.
+
+    Differences from :func:`run_experiment`:
+    - tests come from the ingested DANTE suite (``ingest-crawl``), have no gold
+      standard, and therefore no exact-match / similarity metrics;
+    - context sources are the auto-generated action trace (treatment B) and the
+      crawled per-state DOM (treatment C) — no Gherkin / Page Objects / Strings;
+    - with ``execute``, tests run inside a copy of the DANTE test project with
+      the pinned JDK 8 toolchain, against a freshly reset app container, and
+      the stored error category is execution-based: correct if the assertion
+      holds on the live app, wrong_assertion if it fails.
+    """
+    from .ingest.dante import (
+        crawled_variant_source,
+        ingest_dante_suite,
+        to_test_records,
+    )
+    from .llm.prompt_builder import (
+        build_crawled_assertion_prompt,
+        crawled_treatment_ingredients,
+    )
+    from .execution.dante_runner import (
+        compile_crawled_project,
+        prepare_crawled_project_copy,
+        reset_crawled_app,
+        run_crawled_test,
+    )
+
+    models = models or [config.default_model]
+    app_config = config.apps.get(app, {})
+    version = (app_config.get("versions") or ["crawled"])[0]
+
+    suite_path = config.get_dante_suite_path(app)
+    crawl_dir = config.get_dante_crawl_dir(app)
+    if not suite_path.exists():
+        raise FileNotFoundError(
+            f"DANTE-generated suite not found: {suite_path}\n"
+            f"Run the crawl first (see docs/dante-setup.md)."
+        )
+
+    crawled = ingest_dante_suite(app, suite_path, crawl_dir, config.output_dir / "crawled" / app)
+    by_class = {t.class_name: t for t in crawled}
+    records = to_test_records(crawled, version)
+    if limit is not None:
+        records = records[:limit]
+
+    total = len(records) * len(treatments) * len(models)
+    store = ResultStore(config.output_dir / "results.db")
+    all_results: list[ExperimentResult] = []
+    completed = 0
+
+    def _progress(treatment: str, class_name: str, message: str):
+        if on_progress:
+            on_progress(completed, total, treatment, class_name, message)
+
+    for model_name in models:
+        _progress("", "", f"model:{model_name}")
+        llm = create_client(config, model_name)
+
+        for record in records:
+            crawled_test = by_class[record.class_name]
+
+            for t in treatments:
+                completed += 1
+
+                if store.has_result(app, version, record.class_name, t,
+                                    model_name, mode, source="crawled"):
+                    _progress(t, record.class_name, "skipped")
+                    continue
+
+                ingredients = crawled_treatment_ingredients(mode, t)
+
+                variant_source = crawled_variant_source(
+                    record, crawled_test.trace_comment if ingredients.comments else None
+                )
+
+                html = None
+                if ingredients.html and crawled_test.state_dom_path:
+                    html = Path(crawled_test.state_dom_path).read_text()
+                elif ingredients.html:
+                    _progress(t, record.class_name, "no_html")
+
+                system, user = build_crawled_assertion_prompt(
+                    record,
+                    variant_source=variant_source,
+                    include_comments=ingredients.comments,
+                    html_content=html,
+                )
+
+                llm_response = None
+                try:
+                    llm_response = llm.generate(system, user)
+                    raw_response = llm_response.text
+                except Exception as e:
+                    error_response = LLMResponse(text=str(e), provider="", model=model_name)
+                    result = ExperimentResult(
+                        test_record=record, treatment=t, model=model_name,
+                        mode=mode, source="crawled",
+                        prompt=user, raw_response=str(e), generated_assertion="",
+                        error_category=ErrorCategory.NOT_EXECUTABLE,
+                        notes=f"LLM error: {e}",
+                    )
+                    experiment_id = store.save_result(result)
+                    _save_and_emit_llm_call(store, _build_generation_call(
+                        record, t, model_name, system, user, error_response,
+                        experiment_id, mode, source="crawled",
+                    ))
+                    all_results.append(result)
+                    _progress(t, record.class_name, f"error:{e}")
+                    continue
+
+                generated = extract_assertion_from_response(raw_response)
+                valid = validate_assertion(generated)
+
+                result = ExperimentResult(
+                    test_record=record, treatment=t, model=model_name,
+                    mode=mode, source="crawled",
+                    prompt=user, raw_response=raw_response,
+                    generated_assertion=generated,
+                )
+
+                if not valid:
+                    result.error_category = ErrorCategory.NOT_EXECUTABLE
+                    result.notes = "Generated assertion failed validation"
+                    _progress(t, record.class_name, "invalid")
+                elif not execute:
+                    result.notes = "execution skipped; no gold standard for crawled tests"
+                    _progress(t, record.class_name, "generated")
+                else:
+                    reset_crawled_app(config, app)
+                    work_dir = prepare_crawled_project_copy(
+                        config, app, record, generated, variant_source, t, model_name,
+                    )
+                    compile_res = compile_crawled_project(work_dir)
+                    result.compiles = compile_res.success
+
+                    if compile_res.success:
+                        test_res = run_crawled_test(work_dir, record.class_name)
+                        result.passes = test_res.passed
+                        if test_res.error_message:
+                            result.notes = test_res.error_message[:500]
+                        result.error_category = (
+                            ErrorCategory.CORRECT if test_res.passed
+                            else ErrorCategory.WRONG_ASSERTION
+                        )
+                    else:
+                        result.error_category = ErrorCategory.NOT_EXECUTABLE
+                        result.notes = "; ".join(compile_res.errors[:3])
+
+                    note_suffix = "category is execution-based (no gold standard)"
+                    result.notes = (result.notes + "; " if result.notes else "") + note_suffix
+                    status = "PASS" if result.passes else "FAIL"
+                    _progress(t, record.class_name,
+                              f"{status}:cat={result.error_category.value}")
+
+                experiment_id = store.save_result(result)
+                _save_and_emit_llm_call(store, _build_generation_call(
+                    record, t, model_name, system, user, llm_response,
+                    experiment_id, mode, source="crawled",
+                ))
+                all_results.append(result)
 
     store.close()
     flush_observability()

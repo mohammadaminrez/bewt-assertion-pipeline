@@ -59,6 +59,7 @@ class LLMCall:
     user_prompt: str
     raw_response: str
     mode: str = "cumulative"  # experiment design: cumulative | singular
+    source: str = "bewt"      # test provenance: bewt (benchmark) | crawled (DANTE/Crawljax)
     experiment_id: int | None = None
     prompt_hash: str | None = None
     input_tokens: int | None = None
