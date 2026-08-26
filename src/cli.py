@@ -26,8 +26,13 @@ from .evaluation.excel_export import export_results_to_excel, import_classificat
 from .evaluation.prompt_export import export_llm_calls
 from .evaluation.usage_report import export_treatment_comparison
 from .data.store import ResultStore
-from .runner import run_experiment, count_experiments
-from .llm.prompt_builder import MODES, MODE_CUMULATIVE, valid_treatments
+from .runner import run_experiment, run_crawled_experiment, count_experiments
+from .llm.prompt_builder import (
+    MODES,
+    MODE_CUMULATIVE,
+    valid_treatments,
+    valid_crawled_treatments,
+)
 
 
 def _validate_bewt_repo(config: Config) -> None:
@@ -212,13 +217,36 @@ def capture_html(ctx, app):
 @click.option("--mode", type=click.Choice(MODES), default=MODE_CUMULATIVE,
               help="Experiment design: cumulative (context added step by step) or "
                    "singular (each treatment isolates one source; adds E = full)")
+@click.option("--source", type=click.Choice(["bewt", "crawled"]), default="bewt",
+              help="Test provenance: bewt (benchmark tests with gold assertions) or "
+                   "crawled (DANTE/Crawljax-generated tests; treatments A/B/C only)")
 @click.pass_context
-def run(ctx, app, model, treatment, execute, limit, mode):
+def run(ctx, app, model, treatment, execute, limit, mode, source):
     """Run the full experiment pipeline."""
     config = ctx.obj["config"]
+    models = list(model) if model else [config.default_model]
+
+    if source == "crawled":
+        if not app:
+            raise click.ClickException(
+                "--source crawled requires an explicit --app (one crawled app per run)."
+            )
+        if len(app) > 1:
+            raise click.ClickException("--source crawled supports a single --app per run.")
+        allowed = valid_crawled_treatments(mode)
+        treatments = tuple(treatment) if treatment else allowed
+        invalid = [t for t in treatments if t not in allowed]
+        if invalid:
+            raise click.ClickException(
+                f"Treatment(s) {', '.join(invalid)} not valid for crawled tests in "
+                f"{mode} mode. Valid: {', '.join(allowed)}."
+            )
+        _validate_api_keys(config, models)
+        _run_crawled(config, app[0], models, treatments, execute, limit, mode)
+        return
+
     _validate_bewt_repo(config)
     apps = list(app) if app else list(config.apps.keys())
-    models = list(model) if model else [config.default_model]
     treatments = tuple(treatment) if treatment else valid_treatments(mode)
 
     allowed = valid_treatments(mode)
@@ -276,6 +304,127 @@ def run(ctx, app, model, treatment, execute, limit, mode):
     for t, s in summary.get("by_treatment", {}).items():
         click.echo(f"  Treatment {t}: {s['count']} tests, {s['passes']} pass, {s['exact']} exact")
     store.close()
+
+
+def _run_crawled(config, app, models, treatments, execute, limit, mode):
+    """Drive run_crawled_experiment with CLI progress output."""
+    suite_path = config.get_dante_suite_path(app)
+    if not suite_path.exists():
+        raise click.ClickException(
+            f"DANTE-generated suite not found for {app}:\n  {suite_path}\n"
+            f"Run 'bewt-pipeline crawl --app {app}' first (see docs/dante-setup.md)."
+        )
+
+    def on_progress(completed, total_exp, t, class_name, message):
+        progress = f"[{completed}/{total_exp}]"
+        if message.startswith("model:"):
+            click.echo(f"\n{'='*60}\nModel: {message[6:]} (crawled: {app})\n{'='*60}")
+        elif message == "skipped":
+            click.echo(f"  {progress} [{t}] {class_name}: already done, skipping")
+        elif message == "no_html":
+            click.echo(f"  {progress} [{t}] {class_name}: " + click.style("no state DOM captured", fg="yellow"))
+        elif message == "invalid":
+            click.echo(f"  {progress} [{t}] {class_name}: " + click.style("invalid assertion", fg="red"))
+        elif message == "generated":
+            click.echo(f"  {progress} [{t}] {class_name}: " + click.style("assertion generated", fg="green"))
+        elif message.startswith("error:"):
+            click.echo(f"  {progress} [{t}] {class_name}: " + click.style(f"LLM error: {message[6:]}", fg="red"))
+        elif message.startswith("PASS:") or message.startswith("FAIL:"):
+            color = "green" if message.startswith("PASS") else "red"
+            click.echo(f"  {progress} [{t}] {class_name}: " + click.style(message, fg=color))
+
+    results = run_crawled_experiment(
+        config, app, models=models, treatments=treatments,
+        execute=execute, on_progress=on_progress, limit=limit, mode=mode,
+    )
+    click.echo(f"\nCrawled experiments completed this run: {len(results)}")
+
+
+@main.command(name="ingest-crawl")
+@click.option("--app", "-a", required=True, help="App whose DANTE crawl to ingest")
+@click.pass_context
+def ingest_crawl(ctx, app):
+    """Ingest a DANTE-generated test suite: split tests, add placeholders, map state DOMs."""
+    from .ingest.dante import ingest_dante_suite
+
+    config = ctx.obj["config"]
+    suite_path = config.get_dante_suite_path(app)
+    crawl_dir = config.get_dante_crawl_dir(app)
+    if not suite_path.exists():
+        raise click.ClickException(
+            f"DANTE-generated suite not found for {app}:\n  {suite_path}\n"
+            f"Run 'bewt-pipeline crawl --app {app}' first."
+        )
+
+    output_dir = config.output_dir / "crawled" / app
+    tests = ingest_dante_suite(app, suite_path, crawl_dir, output_dir)
+
+    click.echo(f"Ingested {len(tests)} crawled tests from {suite_path.name}:")
+    for t in tests:
+        dom = "dom:yes" if t.state_dom_path else click.style("dom:MISSING", fg="yellow")
+        click.echo(f"  {t.class_name}  final={t.final_state}  {dom}")
+    click.echo(f"\nPlaceholdered classes written to {output_dir / 'tests'}")
+    click.echo(f"State map written to {output_dir / 'state_map.json'}")
+
+
+@main.command()
+@click.option("--app", "-a", required=True, help="App to crawl with DANTE")
+@click.option("--headless/--no-headless", default=True, help="Run Chrome headless")
+@click.option("--minutes", "-t", type=int, default=10, help="Crawl time budget (minutes)")
+@click.option("--skip-generate", is_flag=True, default=False,
+              help="Only crawl; skip generating + running the Java test project")
+@click.pass_context
+def crawl(ctx, app, headless, minutes, skip_generate):
+    """Crawl an app with DANTE and generate its Selenium test suite."""
+    import subprocess
+
+    config = ctx.obj["config"]
+    dante_dir = config.dante_repo_path / "dante"
+    if not (dante_dir / "run-crawling.sh").exists():
+        raise click.ClickException(
+            f"DANTE not found at {config.dante_repo_path}.\n"
+            f"See docs/dante-setup.md for the toolchain bring-up."
+        )
+
+    from .execution.dante_runner import _toolchain_env, DEFAULT_JAVA_HOME
+    env = _toolchain_env()
+    if not Path(env["JAVA_HOME"], "bin", "java").exists():
+        raise click.ClickException(
+            f"Pinned JDK 8 not found at {env['JAVA_HOME']} "
+            f"(default: {DEFAULT_JAVA_HOME}).\nSee docs/dante-setup.md, or set DANTE_JAVA_HOME."
+        )
+
+    headless_flag = "true" if headless else "false"
+
+    click.echo(f"=== Crawling {app} with DANTE ({minutes} min, headless={headless_flag}) ===")
+    result = subprocess.run(
+        ["./run-crawling.sh", app, headless_flag, str(minutes)],
+        cwd=str(dante_dir), env=env,
+    )
+    if result.returncode != 0:
+        raise click.ClickException(
+            f"Crawl failed (exit {result.returncode}). "
+            f"See ~/Desktop/errors_CrawlApp_{app}.txt"
+        )
+
+    if skip_generate:
+        click.echo("Crawl complete (generation skipped).")
+        return
+
+    click.echo(f"\n=== Generating Java test project for {app} ===")
+    result = subprocess.run(
+        ["./generate-java-project-from-crawling.sh", app, headless_flag],
+        cwd=str(dante_dir), env=env,
+    )
+    if result.returncode != 0:
+        raise click.ClickException(f"Test project generation failed (exit {result.returncode}).")
+
+    suite = config.get_dante_suite_path(app)
+    if suite.exists():
+        click.echo(click.style(f"\nGenerated suite: {suite}", fg="green"))
+        click.echo(f"Next: bewt-pipeline ingest-crawl --app {app}")
+    else:
+        click.echo(click.style("\nGeneration finished but suite file not found.", fg="red"))
 
 
 @main.command()
@@ -410,7 +559,7 @@ def export_prompts(ctx, output, app, class_name, treatment, model, call_type):
 @click.option(
     "--by",
     "group_by",
-    type=click.Choice(["none", "treatment", "model", "app", "call_type"]),
+    type=click.Choice(["none", "treatment", "model", "app", "call_type", "source"]),
     default="none",
     help="Group usage summary",
 )
