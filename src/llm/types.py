@@ -22,6 +22,10 @@ class LLMResponse:
     reasoning_tokens: int | None = None
     cost_usd: float | None = None
     latency_ms: int | None = None
+    # True when replayed from the local response cache: tokens, cost and
+    # latency are the original call's (a property of the prompt), but no
+    # API request was made, so nothing was spent.
+    from_cache: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -41,6 +45,7 @@ class LLMResponse:
             reasoning_tokens=data.get("reasoning_tokens"),
             cost_usd=data.get("cost_usd"),
             latency_ms=data.get("latency_ms"),
+            from_cache=data.get("from_cache", False),
         )
 
 
@@ -70,6 +75,7 @@ class LLMCall:
     reasoning_tokens: int | None = None
     cost_usd: float | None = None
     latency_ms: int | None = None
+    from_cache: bool = False
     id: int | None = None
     created_at: str | None = None
 

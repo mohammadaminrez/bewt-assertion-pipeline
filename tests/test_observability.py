@@ -157,3 +157,8 @@ def test_failed_provider_call_is_marked_as_error(fake_posthog):
     assert props["$ai_is_error"] is True
     assert props["$ai_error"] == "RateLimitError: slow down"
     assert "$ai_total_cost_usd" not in props
+
+
+def test_cache_hits_are_not_sent(fake_posthog):
+    emit_llm_call(_call(from_cache=True))
+    assert fake_posthog.instances == [] or fake_posthog.instances[0].captured == []

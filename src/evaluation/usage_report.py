@@ -41,6 +41,7 @@ def build_treatment_comparison_rows(records: list[dict]) -> list[dict]:
         row[f"{prefix}total_tokens"] = record.get("total_tokens")
         row[f"{prefix}cost_usd"] = record.get("cost_usd")
         row[f"{prefix}latency_ms"] = record.get("latency_ms")
+        row[f"{prefix}from_cache"] = record.get("from_cache")
         row[f"{prefix}exact_match"] = record.get("exact_match")
         row[f"{prefix}semantic_similarity"] = record.get("semantic_similarity")
         row[f"{prefix}error_category"] = record.get("error_category")
@@ -62,6 +63,7 @@ def treatment_comparison_columns() -> list[str]:
             f"{prefix}total_tokens",
             f"{prefix}cost_usd",
             f"{prefix}latency_ms",
+            f"{prefix}from_cache",
             f"{prefix}exact_match",
             f"{prefix}semantic_similarity",
             f"{prefix}error_category",

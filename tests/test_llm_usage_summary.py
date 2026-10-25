@@ -78,6 +78,7 @@ def test_get_llm_usage_summary_total(tmp_path):
     assert rows == [{
         "group_key": "total",
         "calls": 1,
+        "cache_hits": 0,
         "input_tokens": 100,
         "output_tokens": 20,
         "total_tokens": 120,
@@ -88,4 +89,25 @@ def test_get_llm_usage_summary_total(tmp_path):
         "cost_usd": 0.001,
         "avg_latency_ms": 100.0,
     }]
+    store.close()
+
+
+def test_get_llm_usage_summary_excludes_cache_hits_from_spend(tmp_path):
+    store = ResultStore(tmp_path / "results.db")
+    for from_cache in (False, True):
+        store.save_llm_call(LLMCall(
+            call_type="generation", app="bludit", class_name="AddCategoryTest",
+            method_name="addCategory", treatment="A", model="gpt-4o-mini",
+            provider="openai", system_prompt="system", user_prompt="user",
+            raw_response="raw", input_tokens=100, output_tokens=20, total_tokens=120,
+            cost_usd=0.001, latency_ms=100, from_cache=from_cache,
+        ))
+
+    [row] = store.get_llm_usage_summary()
+
+    assert row["calls"] == 1
+    assert row["cache_hits"] == 1
+    assert row["input_tokens"] == 100
+    assert row["cost_usd"] == 0.001
+    assert [c["from_cache"] for c in store.get_llm_calls()] == [0, 1]
     store.close()

@@ -26,7 +26,7 @@ from .evaluation.excel_export import export_results_to_excel, import_classificat
 from .evaluation.prompt_export import export_llm_calls
 from .evaluation.usage_report import export_treatment_comparison
 from .data.store import ResultStore
-from .runner import run_experiment, run_crawled_experiment, count_experiments
+from .runner import MissingContextError, run_experiment, run_crawled_experiment, count_experiments
 from .llm.prompt_builder import TREATMENTS, CRAWLED_TREATMENTS
 
 
@@ -259,8 +259,6 @@ def run(ctx, app, model, treatment, execute, limit, source):
             click.echo(f"\n--- {message[4:]} ---")
         elif message.startswith("skip:"):
             click.echo(click.style(f"  {message[5:]}: test dir not found, skipping", fg="red"))
-        elif message == "no_html":
-            click.echo(f"  {progress} [{t}] {class_name}: " + click.style("no HTML captured, falling back to B", fg="yellow"))
         elif message == "skipped":
             click.echo(f"  {progress} [{t}] {class_name}: already done, skipping")
         elif message == "invalid":
@@ -276,10 +274,13 @@ def run(ctx, app, model, treatment, execute, limit, source):
             color = "green" if status == "PASS" else "red"
             click.echo(f"  {progress} [{t}] {class_name}: " + click.style(message, fg=color))
 
-    results = run_experiment(
-        config, apps=apps, models=models, treatments=treatments,
-        execute=execute, on_progress=on_progress, limit=limit,
-    )
+    try:
+        results = run_experiment(
+            config, apps=apps, models=models, treatments=treatments,
+            execute=execute, on_progress=on_progress, limit=limit,
+        )
+    except MissingContextError as e:
+        raise click.ClickException(str(e))
 
     store = ResultStore(config.output_dir / "results.db")
     summary = store.get_summary()
@@ -304,8 +305,6 @@ def _run_crawled(config, app, models, treatments, execute, limit):
             click.echo(f"\n{'='*60}\nModel: {message[6:]} (crawled: {app})\n{'='*60}")
         elif message == "skipped":
             click.echo(f"  {progress} [{t}] {class_name}: already done, skipping")
-        elif message == "no_html":
-            click.echo(f"  {progress} [{t}] {class_name}: " + click.style("no state DOM captured", fg="yellow"))
         elif message == "invalid":
             click.echo(f"  {progress} [{t}] {class_name}: " + click.style("invalid assertion", fg="red"))
         elif message == "generated":
@@ -316,10 +315,13 @@ def _run_crawled(config, app, models, treatments, execute, limit):
             color = "green" if message.startswith("PASS") else "red"
             click.echo(f"  {progress} [{t}] {class_name}: " + click.style(message, fg=color))
 
-    results = run_crawled_experiment(
-        config, app, models=models, treatments=treatments,
-        execute=execute, on_progress=on_progress, limit=limit,
-    )
+    try:
+        results = run_crawled_experiment(
+            config, app, models=models, treatments=treatments,
+            execute=execute, on_progress=on_progress, limit=limit,
+        )
+    except MissingContextError as e:
+        raise click.ClickException(str(e))
     click.echo(f"\nCrawled experiments completed this run: {len(results)}")
 
 
@@ -622,7 +624,7 @@ def export_prompts(ctx, output, app, class_name, treatment, model, call_type):
 @click.option("--output", "-o", type=click.Path(), default=None, help="Optional CSV output path")
 @click.pass_context
 def llm_usage(ctx, group_by, output):
-    """Show token, cost, and latency summary for logged LLM calls."""
+    """Show real API usage (tokens, cost, latency); cache hits are counted separately."""
     config = ctx.obj["config"]
     db_path = config.output_dir / "results.db"
     if not db_path.exists():
@@ -639,6 +641,7 @@ def llm_usage(ctx, group_by, output):
     headers = [
         "group",
         "calls",
+        "cache_hits",
         "input",
         "output",
         "total",
@@ -654,6 +657,7 @@ def llm_usage(ctx, group_by, output):
         table_rows.append({
             "group": row["group_key"],
             "calls": row["calls"],
+            "cache_hits": row["cache_hits"],
             "input": row["input_tokens"],
             "output": row["output_tokens"],
             "total": row["total_tokens"],

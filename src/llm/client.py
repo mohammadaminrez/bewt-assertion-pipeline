@@ -135,26 +135,32 @@ class GeminiClient:
 
 
 class CachedClient:
-    """Wraps an LLM client with disk-based response caching."""
+    """Wraps an LLM client with disk-based response caching.
 
-    def __init__(self, client: LLMClient, cache_dir: Path):
+    The cache key covers the generation settings as well as the prompt, so
+    changing the model id, temperature or max_tokens never replays an answer
+    produced under different settings.
+    """
+
+    def __init__(self, client: LLMClient, cache_dir: Path, settings: str):
         self.client = client
         self.cache_dir = cache_dir
+        self.settings = settings
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def generate(self, system: str, user: str) -> LLMResponse:
-        key = hashlib.sha256(f"{system}|||{user}".encode()).hexdigest()
+        key = hashlib.sha256(f"{self.settings}|||{system}|||{user}".encode()).hexdigest()
         cache_file = self.cache_dir / f"{key}.json"
 
         if cache_file.exists():
             data = json.loads(cache_file.read_text())
-            cached = data.get("response", "")
-            if isinstance(cached, dict):
-                return LLMResponse.from_dict(cached)
-            return LLMResponse(text=cached, provider="", model="")
+            response = LLMResponse.from_dict(data["response"])
+            response.from_cache = True
+            return response
 
         response = self.client.generate(system, user)
         cache_file.write_text(json.dumps({
+            "settings": self.settings,
             "system": system,
             "user": user,
             "response": response.to_dict(),
@@ -224,6 +230,10 @@ def create_client(config: Config, model_name: str | None = None) -> LLMClient:
     # Wrap with cache if enabled
     if config.cache_responses:
         cache_dir = config.output_dir / "cache" / model_name
-        client = CachedClient(client, cache_dir)
+        settings = (
+            f"{model_config['model_id']}|temperature={model_config['temperature']}"
+            f"|max_tokens={model_config['max_tokens']}"
+        )
+        client = CachedClient(client, cache_dir, settings)
 
     return client

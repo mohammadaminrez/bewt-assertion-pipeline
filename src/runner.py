@@ -26,6 +26,14 @@ from .data.store import ResultStore
 ProgressCallback = Callable[[int, int, str, str, str], None]
 
 
+class MissingContextError(RuntimeError):
+    """A treatment's context source (HTML / state DOM) is missing for some tests.
+
+    Raised before any LLM call: silently dropping the source would make e.g.
+    treatment C identical to B and break the paired A/B/C/D comparison.
+    """
+
+
 def _build_generation_call(
     record,
     treatment: str,
@@ -58,6 +66,7 @@ def _build_generation_call(
         reasoning_tokens=response.reasoning_tokens,
         cost_usd=response.cost_usd,
         latency_ms=response.latency_ms,
+        from_cache=response.from_cache,
     )
 
 
@@ -89,6 +98,47 @@ def count_experiments(
     return total
 
 
+def _load_app_records(config: Config, app_name: str, limit: int | None):
+    """Parse an app's tests; returns (records, version, strings_source)."""
+    app_config = config.apps[app_name]
+    version = app_config["versions"][0]
+    strings_path = (
+        config.get_app_project_path(app_name) / "src" / "main" / "java" / "utils" / "Strings.java"
+    )
+    constants = resolve_strings_constants(strings_path)
+    strings_source = strings_path.read_text() if strings_path.exists() else ""
+    records = parse_all_tests(
+        config.get_app_test_path(app_name), app_name, app_config["variant"], version, constants
+    )
+    if limit is not None:
+        records = sorted(records, key=lambda r: r.class_name)[:limit]
+    return records, version, strings_source
+
+
+def _check_html_available(
+    config: Config, apps: list[str], treatments: tuple[str, ...], limit: int | None,
+) -> None:
+    """Fail before any LLM call if an HTML treatment lacks a captured page."""
+    html_treatments = [t for t in treatments if treatment_ingredients(t).html]
+    if not html_treatments:
+        return
+    missing = []
+    for app_name in apps:
+        if not config.get_app_test_path(app_name).exists():
+            continue
+        records, _, _ = _load_app_records(config, app_name, limit)
+        missing += [
+            f"{app_name}/{r.class_name}" for r in records
+            if capture_html_static(config, app_name, r.class_name) is None
+        ]
+    if missing:
+        raise MissingContextError(
+            f"Treatment(s) {', '.join(html_treatments)} need the captured HTML page, "
+            f"but {len(missing)} test(s) have none:\n  " + "\n  ".join(missing)
+            + "\nRun 'bewt-pipeline capture-html --app <app>' first."
+        )
+
+
 def run_experiment(
     config: Config,
     apps: list[str] | None = None,
@@ -113,6 +163,7 @@ def run_experiment(
     """
     apps = apps or list(config.apps.keys())
     models = models or [config.default_model]
+    _check_html_available(config, apps, treatments, limit)
 
     total = count_experiments(config, apps, models, treatments, limit=limit)
     store = ResultStore(config.output_dir / "results.db")
@@ -134,18 +185,7 @@ def run_experiment(
                 continue
 
             _progress("", "", f"app:{app_name}")
-            app_config = config.apps[app_name]
-            version = app_config["versions"][0]
-
-            # Parse tests
-            strings_path = (
-                config.get_app_project_path(app_name) / "src" / "main" / "java" / "utils" / "Strings.java"
-            )
-            constants = resolve_strings_constants(strings_path)
-            strings_source = strings_path.read_text() if strings_path.exists() else ""
-            records = parse_all_tests(test_dir, app_name, app_config["variant"], version, constants)
-            if limit is not None:
-                records = sorted(records, key=lambda r: r.class_name)[:limit]
+            records, version, strings_source = _load_app_records(config, app_name, limit)
 
             # Parse gherkin
             gherkin_dir = config.get_gherkin_path(app_name)
@@ -180,9 +220,8 @@ def run_experiment(
 
                     html = None
                     if ingredients.html:
+                        # Presence is guaranteed by _check_html_available.
                         html = capture_html_static(config, app_name, record.class_name)
-                        if not html:
-                            _progress(t, record.class_name, "no_html")
 
                     system, user = build_assertion_prompt(
                         record,
@@ -340,6 +379,14 @@ def run_crawled_experiment(
     if limit is not None:
         records = records[:limit]
 
+    html_treatments = [t for t in treatments if crawled_treatment_ingredients(t).html]
+    missing = [r.class_name for r in records if not by_class[r.class_name].state_dom_path]
+    if html_treatments and missing:
+        raise MissingContextError(
+            f"Treatment(s) {', '.join(html_treatments)} need the crawled state DOM, "
+            f"but {len(missing)} test(s) have none:\n  " + "\n  ".join(missing)
+        )
+
     total = len(records) * len(treatments) * len(models)
     store = ResultStore(config.output_dir / "results.db")
     all_results: list[ExperimentResult] = []
@@ -371,10 +418,9 @@ def run_crawled_experiment(
                 )
 
                 html = None
-                if ingredients.html and crawled_test.state_dom_path:
+                if ingredients.html:
+                    # Presence is guaranteed by the check above.
                     html = Path(crawled_test.state_dom_path).read_text()
-                elif ingredients.html:
-                    _progress(t, record.class_name, "no_html")
 
                 system, user = build_crawled_assertion_prompt(
                     record,

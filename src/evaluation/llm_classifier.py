@@ -246,6 +246,7 @@ def _build_pre_classification_call(
         reasoning_tokens=response.reasoning_tokens,
         cost_usd=response.cost_usd,
         latency_ms=response.latency_ms,
+        from_cache=response.from_cache,
     )
 
 

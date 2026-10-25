@@ -44,7 +44,7 @@ def test_retry_client_returns_structured_response():
 
 def test_cached_client_preserves_structured_response(tmp_path):
     inner = FakeClient()
-    client = CachedClient(inner, tmp_path)
+    client = CachedClient(inner, tmp_path, "fake-model|temperature=0.0|max_tokens=1024")
 
     first = client.generate("system", "user")
     second = client.generate("system", "user")
@@ -54,6 +54,19 @@ def test_cached_client_preserves_structured_response(tmp_path):
     assert second.provider == "fake"
     assert second.model == "fake-model"
     assert second.total_tokens == 8
+    assert first.from_cache is False
+    assert second.from_cache is True
+
+
+def test_cached_client_key_includes_generation_settings(tmp_path):
+    inner = FakeClient()
+    CachedClient(inner, tmp_path, "fake-model|temperature=0.0|max_tokens=1024").generate("system", "user")
+    changed = CachedClient(inner, tmp_path, "fake-model|temperature=0.7|max_tokens=1024")
+
+    response = changed.generate("system", "user")
+
+    assert inner.calls == 2
+    assert response.from_cache is False
 
 
 def test_getattr_path_returns_nested_provider_usage():

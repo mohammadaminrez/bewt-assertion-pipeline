@@ -118,7 +118,13 @@ def _generation_properties(call: LLMCall) -> dict:
 
 
 def emit_llm_call(call: LLMCall) -> None:
-    """Mirror one locally persisted LLM call to PostHog when configured."""
+    """Mirror one locally persisted LLM call to PostHog when configured.
+
+    Cache hits are not sent: PostHog shows only real API traffic and spend,
+    while the local database keeps every call, flagged with `from_cache`.
+    """
+    if call.from_cache:
+        return
     posthog = _get_posthog_client()
     if posthog is None:
         return

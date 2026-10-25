@@ -76,6 +76,7 @@ class ResultStore:
                 reasoning_tokens INTEGER,
                 cost_usd REAL,
                 latency_ms INTEGER,
+                from_cache INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(experiment_id) REFERENCES experiments(id)
             );
@@ -206,8 +207,8 @@ class ResultStore:
              system_prompt, user_prompt, prompt_hash, raw_response,
              input_tokens, output_tokens, total_tokens, cached_input_tokens,
              cache_creation_input_tokens, cache_read_input_tokens,
-             reasoning_tokens, cost_usd, latency_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             reasoning_tokens, cost_usd, latency_ms, from_cache)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["experiment_id"], data["call_type"], data["app"], data["class_name"],
             data["method_name"], data["treatment"], data["source"],
@@ -216,7 +217,7 @@ class ResultStore:
             data["input_tokens"], data["output_tokens"], data["total_tokens"],
             data["cached_input_tokens"], data["cache_creation_input_tokens"],
             data["cache_read_input_tokens"], data["reasoning_tokens"], data["cost_usd"],
-            data["latency_ms"],
+            data["latency_ms"], int(data["from_cache"]),
         ))
         self.conn.commit()
         return int(cursor.lastrowid)
@@ -250,7 +251,12 @@ class ResultStore:
         return [dict(row) for row in rows]
 
     def get_llm_usage_summary(self, group_by: str | None = None) -> list[dict]:
-        """Summarize token/cost usage for logged LLM calls."""
+        """Summarize real API usage (spend) for logged LLM calls.
+
+        Token, cost and latency totals cover real API calls only; responses
+        replayed from the local cache cost nothing and are counted separately
+        as `cache_hits`.
+        """
         allowed = {None, "treatment", "model", "app", "call_type", "source"}
         if group_by not in allowed:
             raise ValueError(f"group_by must be one of: {', '.join(sorted(v for v in allowed if v))}")
@@ -260,16 +266,19 @@ class ResultStore:
         rows = self.conn.execute(f"""
             SELECT
                 {group_select}
-                COUNT(*) AS calls,
-                COALESCE(SUM(input_tokens), 0) AS input_tokens,
-                COALESCE(SUM(output_tokens), 0) AS output_tokens,
-                COALESCE(SUM(total_tokens), 0) AS total_tokens,
-                COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
-                COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens,
-                COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
-                COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
-                SUM(cost_usd) AS cost_usd,
-                AVG(latency_ms) AS avg_latency_ms
+                SUM(from_cache = 0) AS calls,
+                SUM(from_cache = 1) AS cache_hits,
+                COALESCE(SUM(CASE WHEN from_cache = 0 THEN input_tokens END), 0) AS input_tokens,
+                COALESCE(SUM(CASE WHEN from_cache = 0 THEN output_tokens END), 0) AS output_tokens,
+                COALESCE(SUM(CASE WHEN from_cache = 0 THEN total_tokens END), 0) AS total_tokens,
+                COALESCE(SUM(CASE WHEN from_cache = 0 THEN cached_input_tokens END), 0) AS cached_input_tokens,
+                COALESCE(SUM(CASE WHEN from_cache = 0 THEN cache_creation_input_tokens END), 0)
+                    AS cache_creation_input_tokens,
+                COALESCE(SUM(CASE WHEN from_cache = 0 THEN cache_read_input_tokens END), 0)
+                    AS cache_read_input_tokens,
+                COALESCE(SUM(CASE WHEN from_cache = 0 THEN reasoning_tokens END), 0) AS reasoning_tokens,
+                SUM(CASE WHEN from_cache = 0 THEN cost_usd END) AS cost_usd,
+                AVG(CASE WHEN from_cache = 0 THEN latency_ms END) AS avg_latency_ms
             FROM llm_calls
             {group_clause}
             ORDER BY group_key
@@ -291,6 +300,7 @@ class ResultStore:
                 c.total_tokens,
                 c.cost_usd,
                 c.latency_ms,
+                c.from_cache,
                 e.exact_match,
                 e.semantic_similarity,
                 e.error_category,
