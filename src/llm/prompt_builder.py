@@ -2,25 +2,14 @@ from __future__ import annotations
 
 """Build prompts for each treatment variant.
 
-Two experiment designs are supported:
-
-* ``cumulative`` (default) — context is added step by step, so each treatment
-  contains everything the previous one had plus one more source:
-  A=code, B=+comments, C=+HTML, D=+project code (D is already the full
-  condition).
-* ``singular`` — each treatment isolates a single context source on top of the
-  code-only baseline, so their effects can be measured independently:
-  A=code, B=code+comments, C=code+HTML, D=code+project code, and E=full (all
-  sources together) to measure synergy against the isolated factors.
+Context is added step by step, so each treatment contains everything the
+previous one had plus one more source: A=code, B=+comments, C=+HTML,
+D=+project code (D is the full condition).
 """
 
 from dataclasses import dataclass
 
 from ..models import TestRecord
-
-MODE_CUMULATIVE = "cumulative"
-MODE_SINGULAR = "singular"
-MODES = (MODE_CUMULATIVE, MODE_SINGULAR)
 
 
 @dataclass(frozen=True)
@@ -31,82 +20,47 @@ class Ingredients:
     project: bool    # project code: Page Objects + Strings.java constants
 
 
-# E is intentionally absent from cumulative: it would duplicate D (the full
-# condition), so it is only offered in singular mode.
-_CUMULATIVE_INGREDIENTS = {
+_INGREDIENTS = {
     "A": Ingredients(comments=False, html=False, project=False),
     "B": Ingredients(comments=True, html=False, project=False),
     "C": Ingredients(comments=True, html=True, project=False),
     "D": Ingredients(comments=True, html=True, project=True),
 }
 
-_SINGULAR_INGREDIENTS = {
-    "A": Ingredients(comments=False, html=False, project=False),
-    "B": Ingredients(comments=True, html=False, project=False),
-    "C": Ingredients(comments=False, html=True, project=False),
-    "D": Ingredients(comments=False, html=False, project=True),
-    "E": Ingredients(comments=True, html=True, project=True),
-}
-
-_INGREDIENTS_BY_MODE = {
-    MODE_CUMULATIVE: _CUMULATIVE_INGREDIENTS,
-    MODE_SINGULAR: _SINGULAR_INGREDIENTS,
-}
+TREATMENTS = tuple(_INGREDIENTS.keys())
 
 
-def valid_treatments(mode: str) -> tuple[str, ...]:
-    """Return the treatment codes that are meaningful under the given mode."""
-    return tuple(_INGREDIENTS_BY_MODE.get(mode, _CUMULATIVE_INGREDIENTS).keys())
-
-
-def treatment_ingredients(mode: str, treatment: str) -> Ingredients:
-    """Return the context sources a treatment includes under the given mode."""
-    table = _INGREDIENTS_BY_MODE.get(mode, _CUMULATIVE_INGREDIENTS)
+def treatment_ingredients(treatment: str) -> Ingredients:
+    """Return the context sources a treatment includes."""
     treatment = treatment.upper()
-    if treatment not in table:
+    if treatment not in _INGREDIENTS:
         raise ValueError(
-            f"Treatment {treatment} is not valid in {mode} mode "
-            f"(valid: {', '.join(table.keys())})"
+            f"Treatment {treatment} is not valid (valid: {', '.join(TREATMENTS)})"
         )
-    return table[treatment]
+    return _INGREDIENTS[treatment]
 
 
 # Crawled (DANTE/Crawljax) tests reuse the same ingredient booleans, but the
 # `project` source does not exist for them: A=code, B=+action-trace comment,
-# C=+state DOM. E/singular-D are meaningless and therefore not offered.
-_CRAWLED_CUMULATIVE_INGREDIENTS = {
+# C=+state DOM. D is meaningless and therefore not offered.
+_CRAWLED_INGREDIENTS = {
     "A": Ingredients(comments=False, html=False, project=False),
     "B": Ingredients(comments=True, html=False, project=False),
     "C": Ingredients(comments=True, html=True, project=False),
 }
 
-_CRAWLED_SINGULAR_INGREDIENTS = {
-    "A": Ingredients(comments=False, html=False, project=False),
-    "B": Ingredients(comments=True, html=False, project=False),
-    "C": Ingredients(comments=False, html=True, project=False),
-}
-
-_CRAWLED_INGREDIENTS_BY_MODE = {
-    MODE_CUMULATIVE: _CRAWLED_CUMULATIVE_INGREDIENTS,
-    MODE_SINGULAR: _CRAWLED_SINGULAR_INGREDIENTS,
-}
+CRAWLED_TREATMENTS = tuple(_CRAWLED_INGREDIENTS.keys())
 
 
-def valid_crawled_treatments(mode: str) -> tuple[str, ...]:
-    """Treatment codes meaningful for crawler-generated tests under a mode."""
-    return tuple(_CRAWLED_INGREDIENTS_BY_MODE.get(mode, _CRAWLED_CUMULATIVE_INGREDIENTS).keys())
-
-
-def crawled_treatment_ingredients(mode: str, treatment: str) -> Ingredients:
+def crawled_treatment_ingredients(treatment: str) -> Ingredients:
     """Context sources a treatment includes for crawler-generated tests."""
-    table = _CRAWLED_INGREDIENTS_BY_MODE.get(mode, _CRAWLED_CUMULATIVE_INGREDIENTS)
     treatment = treatment.upper()
-    if treatment not in table:
+    if treatment not in _CRAWLED_INGREDIENTS:
         raise ValueError(
-            f"Treatment {treatment} is not valid for crawled tests in {mode} mode "
-            f"(valid: {', '.join(table.keys())})"
+            f"Treatment {treatment} is not valid for crawled tests "
+            f"(valid: {', '.join(CRAWLED_TREATMENTS)})"
         )
-    return table[treatment]
+    return _CRAWLED_INGREDIENTS[treatment]
 
 
 SYSTEM_PROMPT = """You are an expert Java/Selenium test engineer. You are given a JUnit/Selenium test method where the assertion(s) have been removed and replaced with a TODO placeholder.
@@ -283,10 +237,9 @@ def build_assertion_prompt(
 ) -> tuple[str, str]:
     """Assemble a prompt from whichever context sources are provided.
 
-    This is mode-agnostic: the caller decides which pieces to pass based on the
-    treatment's ingredients (see ``treatment_ingredients``). The descriptive
-    text only mentions a source when it is actually included, so the prompt
-    stays accurate for both the cumulative and singular designs.
+    The caller decides which pieces to pass based on the treatment's
+    ingredients (see ``treatment_ingredients``). The descriptive text only
+    mentions a source when it is actually included.
     """
     intro = [
         "Complete the following Selenium test by writing the missing "

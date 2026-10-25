@@ -34,7 +34,6 @@ def _build_generation_call(
     user: str,
     response: LLMResponse,
     experiment_id: int | None = None,
-    mode: str = "cumulative",
     source: str = "bewt",
 ) -> LLMCall:
     return LLMCall(
@@ -44,7 +43,6 @@ def _build_generation_call(
         class_name=record.class_name,
         method_name=record.method_name,
         treatment=treatment,
-        mode=mode,
         source=source,
         model=model_name,
         provider=response.provider,
@@ -99,7 +97,6 @@ def run_experiment(
     execute: bool = False,
     on_progress: ProgressCallback | None = None,
     limit: int | None = None,
-    mode: str = "cumulative",
 ) -> list[ExperimentResult]:
     """Run the full experiment pipeline.
 
@@ -110,8 +107,6 @@ def run_experiment(
         treatments: Treatment codes to run.
         execute: If True, compile and run assertions against live apps.
         on_progress: Callback for progress reporting.
-        mode: Experiment design — "cumulative" (context added step by step) or
-            "singular" (each treatment isolates one context source).
 
     Returns:
         List of ExperimentResult objects.
@@ -170,13 +165,13 @@ def run_experiment(
                     completed += 1
 
                     # Resumability
-                    if store.has_result(app_name, version, record.class_name, t, model_name, mode):
+                    if store.has_result(app_name, version, record.class_name, t, model_name):
                         _progress(t, record.class_name, "skipped")
                         continue
 
-                    # Resolve which context sources this treatment includes
-                    # under the active design, then assemble the prompt.
-                    ingredients = treatment_ingredients(mode, t)
+                    # Resolve which context sources this treatment includes,
+                    # then assemble the prompt.
+                    ingredients = treatment_ingredients(t)
 
                     if ingredients.comments:
                         variant_source = generate_variant_b(record, gherkin_map)
@@ -212,7 +207,7 @@ def run_experiment(
                             model=model_name,
                         )
                         result = ExperimentResult(
-                            test_record=record, treatment=t, model=model_name, mode=mode,
+                            test_record=record, treatment=t, model=model_name,
                             prompt=user, raw_response=str(e),
                             generated_assertion="",
                             error_category=ErrorCategory.NOT_EXECUTABLE,
@@ -220,7 +215,7 @@ def run_experiment(
                         )
                         experiment_id = store.save_result(result)
                         _save_and_emit_llm_call(store, _build_generation_call(
-                            record, t, model_name, system, user, error_response, experiment_id, mode
+                            record, t, model_name, system, user, error_response, experiment_id
                         ))
                         all_results.append(result)
                         _progress(t, record.class_name, f"error:{e}")
@@ -231,7 +226,7 @@ def run_experiment(
                     valid = validate_assertion(generated)
 
                     result = ExperimentResult(
-                        test_record=record, treatment=t, model=model_name, mode=mode,
+                        test_record=record, treatment=t, model=model_name,
                         prompt=user, raw_response=raw_response,
                         generated_assertion=generated,
                     )
@@ -277,7 +272,7 @@ def run_experiment(
 
                     experiment_id = store.save_result(result)
                     _save_and_emit_llm_call(store, _build_generation_call(
-                        record, t, model_name, system, user, llm_response, experiment_id, mode
+                        record, t, model_name, system, user, llm_response, experiment_id
                     ))
                     all_results.append(result)
 
@@ -298,7 +293,6 @@ def run_crawled_experiment(
     execute: bool = False,
     on_progress: ProgressCallback | None = None,
     limit: int | None = None,
-    mode: str = "cumulative",
 ) -> list[ExperimentResult]:
     """Run the assertion-generation pipeline on crawler-generated (DANTE) tests.
 
@@ -366,11 +360,11 @@ def run_crawled_experiment(
                 completed += 1
 
                 if store.has_result(app, version, record.class_name, t,
-                                    model_name, mode, source="crawled"):
+                                    model_name, source="crawled"):
                     _progress(t, record.class_name, "skipped")
                     continue
 
-                ingredients = crawled_treatment_ingredients(mode, t)
+                ingredients = crawled_treatment_ingredients(t)
 
                 variant_source = crawled_variant_source(
                     record, crawled_test.trace_comment if ingredients.comments else None
@@ -397,7 +391,7 @@ def run_crawled_experiment(
                     error_response = LLMResponse(text=str(e), provider="", model=model_name)
                     result = ExperimentResult(
                         test_record=record, treatment=t, model=model_name,
-                        mode=mode, source="crawled",
+                        source="crawled",
                         prompt=user, raw_response=str(e), generated_assertion="",
                         error_category=ErrorCategory.NOT_EXECUTABLE,
                         notes=f"LLM error: {e}",
@@ -405,7 +399,7 @@ def run_crawled_experiment(
                     experiment_id = store.save_result(result)
                     _save_and_emit_llm_call(store, _build_generation_call(
                         record, t, model_name, system, user, error_response,
-                        experiment_id, mode, source="crawled",
+                        experiment_id, source="crawled",
                     ))
                     all_results.append(result)
                     _progress(t, record.class_name, f"error:{e}")
@@ -416,7 +410,7 @@ def run_crawled_experiment(
 
                 result = ExperimentResult(
                     test_record=record, treatment=t, model=model_name,
-                    mode=mode, source="crawled",
+                    source="crawled",
                     prompt=user, raw_response=raw_response,
                     generated_assertion=generated,
                 )
@@ -458,7 +452,7 @@ def run_crawled_experiment(
                 experiment_id = store.save_result(result)
                 _save_and_emit_llm_call(store, _build_generation_call(
                     record, t, model_name, system, user, llm_response,
-                    experiment_id, mode, source="crawled",
+                    experiment_id, source="crawled",
                 ))
                 all_results.append(result)
 

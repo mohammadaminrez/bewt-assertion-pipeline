@@ -102,7 +102,7 @@ class GherkinScenario:
 class ExperimentResult:
     """Result of running a single LLM assertion generation experiment."""
     test_record: TestRecord
-    treatment: str  # A, B, C, D, or E
+    treatment: str  # A, B, C, or D
     model: str
     prompt: str
     raw_response: str
@@ -113,7 +113,6 @@ class ExperimentResult:
     error_category: ErrorCategory = ErrorCategory.NOT_EXECUTABLE
     semantic_similarity: float = 0.0
     notes: str = ""
-    mode: str = "cumulative"  # experiment design: cumulative | singular
     source: str = "bewt"      # test provenance: bewt (benchmark) | crawled (DANTE/Crawljax)
 
     def to_dict(self) -> dict:
@@ -124,7 +123,6 @@ class ExperimentResult:
             "class_name": self.test_record.class_name,
             "method_name": self.test_record.method_name,
             "treatment": self.treatment,
-            "mode": self.mode,
             "source": self.source,
             "model": self.model,
             "generated_assertion": self.generated_assertion,

@@ -1,6 +1,3 @@
-import sqlite3
-from pathlib import Path
-
 from src.data.store import ResultStore
 from src.models import AssertionRecord, AssertionType, ErrorCategory, ExperimentResult, TestRecord
 from src.llm.types import LLMCall
@@ -17,7 +14,7 @@ def _record(class_name="CrawledBluditTest0"):
 def _result(source="crawled", treatment="A", **kwargs):
     return ExperimentResult(
         test_record=_record(),
-        treatment=treatment, model="gpt-4o", mode="cumulative", source=source,
+        treatment=treatment, model="gpt-4o", source=source,
         prompt="p", raw_response="r", generated_assertion="assertTrue(true);",
         **kwargs,
     )
@@ -26,7 +23,7 @@ def _result(source="crawled", treatment="A", **kwargs):
 def _call(source="crawled"):
     return LLMCall(
         call_type="generation", app="bludit", class_name="CrawledBluditTest0",
-        method_name="test0", treatment="A", mode="cumulative", source=source,
+        method_name="test0", treatment="A", source=source,
         model="gpt-4o", provider="openai",
         system_prompt="s", user_prompt="u", raw_response="r",
     )
@@ -50,43 +47,9 @@ def test_has_result_is_source_aware(tmp_path):
     store.save_result(_result(source="crawled"))
 
     assert store.has_result("bludit", "3.13.1", "CrawledBluditTest0", "A",
-                            "gpt-4o", "cumulative", source="crawled")
+                            "gpt-4o", source="crawled")
     assert not store.has_result("bludit", "3.13.1", "CrawledBluditTest0", "A",
-                                "gpt-4o", "cumulative", source="bewt")
-    store.close()
-
-
-def test_migration_backfills_existing_rows_as_bewt(tmp_path):
-    db_path = tmp_path / "results.db"
-    # Simulate a pre-source database (with mode, without source).
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE experiments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            app TEXT NOT NULL, variant TEXT NOT NULL, version TEXT NOT NULL,
-            class_name TEXT NOT NULL, method_name TEXT NOT NULL,
-            treatment TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'cumulative',
-            model TEXT NOT NULL,
-            prompt TEXT, raw_response TEXT, generated_assertion TEXT,
-            gold_standard TEXT, compiles INTEGER DEFAULT 0, passes INTEGER DEFAULT 0,
-            exact_match INTEGER DEFAULT 0, error_category TEXT,
-            manual_error_category TEXT, manual_notes TEXT, llm_preclassification TEXT,
-            semantic_similarity REAL DEFAULT 0.0, notes TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(app, version, class_name, treatment, model, mode)
-        );
-        INSERT INTO experiments (app, variant, version, class_name, method_name,
-                                 treatment, mode, model)
-        VALUES ('bludit', 'baseline', '3.13.1', 'AddContentTest', 'test', 'A',
-                'cumulative', 'gpt-4o');
-    """)
-    conn.commit()
-    conn.close()
-
-    store = ResultStore(db_path)
-    rows = store.get_all_results()
-    assert len(rows) == 1
-    assert rows[0]["source"] == "bewt"
+                                "gpt-4o", source="bewt")
     store.close()
 
 

@@ -14,7 +14,7 @@ def _crawled_result(class_name="CrawledBluditTest0", treatment="C", passes=True)
     )
     return ExperimentResult(
         test_record=record, treatment=treatment, model="gpt-4o",
-        mode="cumulative", source="crawled",
+        source="crawled",
         prompt="p", raw_response="r",
         generated_assertion='assertTrue(driver.getPageSource().contains("Hello"));',
         compiles=True, passes=passes,

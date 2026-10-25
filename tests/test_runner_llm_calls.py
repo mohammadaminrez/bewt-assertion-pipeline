@@ -61,7 +61,7 @@ def test_build_generation_call_copies_prompt_response_and_usage_metadata():
     assert call.latency_ms == 345
 
 
-def test_build_generation_call_carries_mode():
+def test_build_generation_call_carries_source():
     record = TestRecord(
         app="mantisbt", variant="v1", version="1.0",
         file_path="AddNewProject.java", class_name="AddNewProject",
@@ -73,13 +73,13 @@ def test_build_generation_call_carries_mode():
         record=record, treatment="C", model_name="gpt-4o-mini",
         system="s", user="u", response=response,
     )
-    assert default_call.mode == "cumulative"
+    assert default_call.source == "bewt"
 
-    singular_call = _build_generation_call(
+    crawled_call = _build_generation_call(
         record=record, treatment="C", model_name="gpt-4o-mini",
-        system="s", user="u", response=response, mode="singular",
+        system="s", user="u", response=response, source="crawled",
     )
-    assert singular_call.mode == "singular"
+    assert crawled_call.source == "crawled"
 
 
 def test_save_and_emit_llm_call_sets_local_call_id(tmp_path, monkeypatch):

@@ -27,12 +27,7 @@ from .evaluation.prompt_export import export_llm_calls
 from .evaluation.usage_report import export_treatment_comparison
 from .data.store import ResultStore
 from .runner import run_experiment, run_crawled_experiment, count_experiments
-from .llm.prompt_builder import (
-    MODES,
-    MODE_CUMULATIVE,
-    valid_treatments,
-    valid_crawled_treatments,
-)
+from .llm.prompt_builder import TREATMENTS, CRAWLED_TREATMENTS
 
 
 def _validate_bewt_repo(config: Config) -> None:
@@ -87,8 +82,8 @@ class TreatmentType(click.ParamType):
 
     def convert(self, value, param, ctx):
         value = value.upper()
-        if value not in ("A", "B", "C", "D", "E"):
-            self.fail(f"'{value}' is not a valid treatment. Choose from: A, B, C, D, E", param, ctx)
+        if value not in TREATMENTS:
+            self.fail(f"'{value}' is not a valid treatment. Choose from: {', '.join(TREATMENTS)}", param, ctx)
         return value
 
 
@@ -211,17 +206,14 @@ def capture_html(ctx, app):
 @main.command()
 @click.option("--app", "-a", multiple=True, help="App(s) to run experiments on")
 @click.option("--model", "-m", multiple=True, help="Model(s) to use")
-@click.option("--treatment", "-t", multiple=True, type=TreatmentType(), help="Treatment(s): A, B, C, D (E in singular mode)")
+@click.option("--treatment", "-t", multiple=True, type=TreatmentType(), help="Treatment(s): A, B, C, D")
 @click.option("--execute", is_flag=True, default=False, help="Compile and run assertions against live apps (requires Maven + Docker)")
 @click.option("--limit", "-n", type=int, default=None, help="Limit number of tests per app (default: all)")
-@click.option("--mode", type=click.Choice(MODES), default=MODE_CUMULATIVE,
-              help="Experiment design: cumulative (context added step by step) or "
-                   "singular (each treatment isolates one source; adds E = full)")
 @click.option("--source", type=click.Choice(["bewt", "crawled"]), default="bewt",
               help="Test provenance: bewt (benchmark tests with gold assertions) or "
                    "crawled (DANTE/Crawljax-generated tests; treatments A/B/C only)")
 @click.pass_context
-def run(ctx, app, model, treatment, execute, limit, mode, source):
+def run(ctx, app, model, treatment, execute, limit, source):
     """Run the full experiment pipeline."""
     config = ctx.obj["config"]
     models = list(model) if model else [config.default_model]
@@ -233,29 +225,20 @@ def run(ctx, app, model, treatment, execute, limit, mode, source):
             )
         if len(app) > 1:
             raise click.ClickException("--source crawled supports a single --app per run.")
-        allowed = valid_crawled_treatments(mode)
-        treatments = tuple(treatment) if treatment else allowed
-        invalid = [t for t in treatments if t not in allowed]
+        treatments = tuple(treatment) if treatment else CRAWLED_TREATMENTS
+        invalid = [t for t in treatments if t not in CRAWLED_TREATMENTS]
         if invalid:
             raise click.ClickException(
-                f"Treatment(s) {', '.join(invalid)} not valid for crawled tests in "
-                f"{mode} mode. Valid: {', '.join(allowed)}."
+                f"Treatment(s) {', '.join(invalid)} not valid for crawled tests. "
+                f"Valid: {', '.join(CRAWLED_TREATMENTS)}."
             )
         _validate_api_keys(config, models)
-        _run_crawled(config, app[0], models, treatments, execute, limit, mode)
+        _run_crawled(config, app[0], models, treatments, execute, limit)
         return
 
     _validate_bewt_repo(config)
     apps = list(app) if app else list(config.apps.keys())
-    treatments = tuple(treatment) if treatment else valid_treatments(mode)
-
-    allowed = valid_treatments(mode)
-    invalid = [t for t in treatments if t not in allowed]
-    if invalid:
-        raise click.ClickException(
-            f"Treatment(s) {', '.join(invalid)} not valid in {mode} mode. "
-            f"Valid: {', '.join(allowed)}."
-        )
+    treatments = tuple(treatment) if treatment else TREATMENTS
 
     _validate_api_keys(config, models)
 
@@ -295,7 +278,7 @@ def run(ctx, app, model, treatment, execute, limit, mode, source):
 
     results = run_experiment(
         config, apps=apps, models=models, treatments=treatments,
-        execute=execute, on_progress=on_progress, limit=limit, mode=mode,
+        execute=execute, on_progress=on_progress, limit=limit,
     )
 
     store = ResultStore(config.output_dir / "results.db")
@@ -306,7 +289,7 @@ def run(ctx, app, model, treatment, execute, limit, mode, source):
     store.close()
 
 
-def _run_crawled(config, app, models, treatments, execute, limit, mode):
+def _run_crawled(config, app, models, treatments, execute, limit):
     """Drive run_crawled_experiment with CLI progress output."""
     suite_path = config.get_dante_suite_path(app)
     if not suite_path.exists():
@@ -335,7 +318,7 @@ def _run_crawled(config, app, models, treatments, execute, limit, mode):
 
     results = run_crawled_experiment(
         config, app, models=models, treatments=treatments,
-        execute=execute, on_progress=on_progress, limit=limit, mode=mode,
+        execute=execute, on_progress=on_progress, limit=limit,
     )
     click.echo(f"\nCrawled experiments completed this run: {len(results)}")
 

@@ -42,8 +42,8 @@ def _treatment_label(call: LLMCall) -> str:
 
 
 def _trace_name(call: LLMCall) -> str:
-    """Human-scannable trace name: which app, which test, treatment, design."""
-    parts = [p for p in (call.app, call.class_name, _treatment_label(call), call.mode) if p]
+    """Human-scannable trace name: which app, which test, treatment, source."""
+    parts = [p for p in (call.app, call.class_name, _treatment_label(call), call.source) if p]
     return " · ".join(parts) or f"bewt-{call.call_type}"
 
 
@@ -58,8 +58,8 @@ def _trace_tags(call: LLMCall) -> list[str]:
         tags.append(f"app:{call.app}")
     if call.treatment:
         tags.append(f"treatment:{call.treatment}")
-    if call.mode:
-        tags.append(f"mode:{call.mode}")
+    if call.source:
+        tags.append(f"source:{call.source}")
     if call.model:
         tags.append(f"model:{call.model}")
     if call.call_type:
@@ -81,7 +81,7 @@ def emit_llm_call(call: LLMCall) -> None:
         "class_name": call.class_name,
         "method_name": call.method_name,
         "treatment": call.treatment,
-        "mode": call.mode,
+        "source": call.source,
         "model": call.model,
         "provider": call.provider,
         "prompt_hash": call.prompt_hash,
@@ -103,7 +103,7 @@ def emit_llm_call(call: LLMCall) -> None:
                 cost_details=_cost_details(call),
                 metadata=metadata,
             )
-            # Name the enclosing trace so the trace list shows app/test/mode
+            # Name the enclosing trace so the trace list shows app/test/source
             # instead of inheriting the generic generation name.
             generation.update_trace(
                 name=_trace_name(call),
