@@ -35,3 +35,8 @@ include = ["src*"]
 
 [tool.ruff]
 line-length = 120
+
+[tool.pytest.ini_options]
+# Tests run without PostHog configured (see tests/conftest.py); the
+# missing-config warning is expected there and asserted explicitly.
+filterwarnings = ["ignore:.*variable required by PostHog:UserWarning"]
