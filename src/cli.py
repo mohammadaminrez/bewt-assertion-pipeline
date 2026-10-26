@@ -466,6 +466,36 @@ def crawl(ctx, app, headless, minutes, skip_generate):
         click.echo(click.style("\nGeneration finished but suite file not found.", fg="red"))
 
 
+@main.command(name="generate-suite")
+@click.option("--app", "-a", required=True, help="Crawled app whose complete test suite to build")
+@click.option("--model", "-m", default=None, help="Model whose crawled answers to use (default: config default)")
+@click.option("--run", "run_number", type=int, default=1, help="Which run's answers to use")
+@click.pass_context
+def generate_suite_cmd(ctx, app, model, run_number):
+    """Build the complete suite: DANTE's crawled tests + the LLM assertions that hold."""
+    from .execution.reference import ReferenceRunError
+    from .execution.suite import generate_suite
+
+    config = ctx.obj["config"]
+    model = model or config.default_model
+    click.echo(f"=== Generating the complete test suite for {app} ({model}, run {run_number}) ===")
+    click.echo("  Checking every assertion alone on the app state before its test...")
+    try:
+        manifest = generate_suite(config, app, model, run_number, log=click.echo)
+    except ReferenceRunError as e:
+        raise click.ClickException(str(e))
+    color = "green" if manifest["suite_run"]["passed"] else "red"
+    click.echo(f"\n{manifest['assertions_kept']}/{manifest['assertions_generated']} assertions hold; "
+               f"{manifest['tests_with_assertions']}/{manifest['tests']} tests have at least one.")
+    click.echo(click.style(
+        f"Enriched suite on a fresh app: {'PASS' if manifest['suite_run']['passed'] else 'FAIL'}"
+        + ("" if manifest["suite_run"]["passed"] else f" ({manifest['suite_run']['message'][:300]})"),
+        fg=color))
+    click.echo(f"Suite: {manifest['suite']}")
+    if not manifest["suite_run"]["passed"]:
+        raise SystemExit(1)
+
+
 @main.command(name="run-oracle-suite")
 @click.option("--app", "-a", required=True, help="App whose Crawljax oracle suite to run")
 @click.pass_context
@@ -528,7 +558,7 @@ def _load_oracle_results(config, apps: set[str]) -> dict[str, str]:
 @click.pass_context
 def report(ctx):
     """Generate reports from stored results."""
-    from .evaluation.reporter import write_crawled_comparison
+    from .evaluation.reporter import write_crawled_comparison, write_generated_suite_summary
 
     config = ctx.obj["config"]
     db_path = config.output_dir / "results.db"
@@ -566,6 +596,11 @@ def report(ctx):
             manual_categories=manual,
         )
         click.echo(f"Crawled comparison written to {config.output_dir / 'reports' / 'crawled_comparison.csv'}")
+        for app in sorted(crawled_apps):
+            manifest_path = config.output_dir / "generated-suite" / app / "manifest.json"
+            if manifest_path.exists():
+                write_generated_suite_summary(json.loads(manifest_path.read_text()), config.output_dir / "reports")
+                click.echo(f"Complete-suite summary written to {config.output_dir / 'reports' / 'generated_suite.csv'}")
 
     summary = store.get_summary()
     click.echo(json.dumps(summary, indent=2))

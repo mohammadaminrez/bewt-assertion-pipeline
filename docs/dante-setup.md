@@ -65,7 +65,17 @@ Crawljax explores app  →  state-flow graph  →  Selenium tests (no assertions
    error) and `wrong_assertion` (assertion fails); an assertion that holds is
    judged on a meaningfulness rubric (`semantic` / `structural`) against the
    Crawljax oracle suite as baseline; comparison table in
-   `reports/crawled_comparison.csv`.
+   `reports/crawled_comparison.csv`. The oracle suite gets the crawl's
+   comparators (e.g. Bludit's CSRF stripping), so it judges the replayed page
+   exactly as the crawl judged states; what still differs is real dynamic
+   content (timestamps, counters, animations, random ids).
+8. **Complete suite** (`bewt-pipeline generate-suite`) — every assertion
+   statement of each answer runs alone on the state before its test; the ones
+   that hold are written into a copy of DANTE's project as
+   `tests.EnrichedTestSuite` (methods in crawl order), and that suite must
+   pass as a whole on a freshly installed app. Output:
+   `output/generated-suite/<app>/` (`project/` + `manifest.json` with every
+   assertion's verdict); summary in `reports/generated_suite.csv`.
 
 ## Full run: all commands in order
 
@@ -92,13 +102,15 @@ cd ~/bewt-assertion-pipeline && source .venv/bin/activate
 
 bewt-pipeline ingest-crawl --app bludit                # split tests, placeholders, action traces
 bewt-pipeline reference-run --app bludit --source crawled     # replay all in crawl order: snapshots + pages
-bewt-pipeline verify-execution --app bludit --source crawled  # controls: must be 30/30
+bewt-pipeline verify-execution --app bludit --source crawled  # controls: every test must be OK
 bewt-pipeline run --app bludit --source crawled \
     --model gpt-4o-mini --execute                      # LLM assertions + isolated execution
 bewt-pipeline run-oracle-suite --app bludit            # Crawljax oracle baseline
 bewt-pipeline export-excel --source crawled --pre-classify   # judge + Excel for manual review
 bewt-pipeline import-excel --source crawled            # after annotating the Excel
-bewt-pipeline report                                   # → reports/crawled_comparison.csv
+bewt-pipeline generate-suite --app bludit --model gpt-4o-mini  # complete suite: tests + assertions that hold
+bewt-pipeline report                                   # → reports/crawled_comparison.csv, generated_suite.csv
+python scripts/make_thesis_charts.py --app bludit      # → reports/figures/ (incl. the crawl graph)
 ```
 
 Useful along the way: `bewt-pipeline llm-usage --by source` (token/cost split),

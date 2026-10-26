@@ -86,6 +86,26 @@ def write_crawled_comparison(
         writer.writerows(rows)
 
 
+def write_generated_suite_summary(manifest: dict, output_dir: Path) -> None:
+    """One row per crawled test of the complete suite: how many of the LLM's
+    assertions were checked and kept, plus a total row with the run of the
+    whole suite on a fresh app."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["test", "method", "assertions_generated", "assertions_kept", "answer_held_whole"]
+    with open(output_dir / "generated_suite.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames + ["suite_passes_on_fresh_app"])
+        writer.writeheader()
+        for t in manifest["per_test"]:
+            writer.writerow({"test": t["class"], "method": t["method"],
+                             "assertions_generated": len(t["assertions"]),
+                             "assertions_kept": t["kept"], "answer_held_whole": int(t["answer_holds"])})
+        writer.writerow({"test": "TOTAL", "method": "",
+                         "assertions_generated": manifest["assertions_generated"],
+                         "assertions_kept": manifest["assertions_kept"],
+                         "answer_held_whole": manifest["answers_holding_whole"],
+                         "suite_passes_on_fresh_app": int(manifest["suite_run"]["passed"])})
+
+
 def write_raw_csv(results: list[ExperimentResult], path: Path) -> None:
     """Write raw results to CSV."""
     if not results:

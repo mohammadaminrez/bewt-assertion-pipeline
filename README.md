@@ -44,8 +44,8 @@ How each part is built:
   separated by other code get numbered placeholders, answered under `// (n)`.
 - **B** – A + the Gherkin Then-clauses as a comment (none if the benchmark has
   no spec for the test; the prompt then mentions no comment).
-- **C** – B + the whole page at the assertion point, deterministically cleaned
-  (no head/scripts/styles/SVG/comments), never cut.
+- **C** – B + the whole page source at the assertion point, exactly as the
+  browser returned it, never cleaned or cut.
 - **D** – C + the project's Page Objects (and `Strings.java`, if present).
 
 The model's code is injected as written. Categories are decided by execution
@@ -115,6 +115,11 @@ not sent to PostHog.
 | `bewt-pipeline import-excel` | Import manual review labels |
 | `bewt-pipeline report` | Regenerate reports from stored results |
 | `bewt-pipeline llm-usage` | Real API usage (tokens, cost, latency) |
+| `bewt-pipeline ingest-crawl` / `run-oracle-suite` | Crawled (DANTE) tests and the Crawljax oracle baseline — see `docs/dante-setup.md` |
+| `bewt-pipeline generate-suite --app <name>` | Complete suite: crawled tests + the LLM assertions that hold, verified on a fresh app |
+
+Figures (benchmark, crawled tests, crawl state-flow graph) for the thesis:
+`python scripts/make_thesis_charts.py --app bludit` → `output/reports/figures/`.
 
 ## Testing
 
