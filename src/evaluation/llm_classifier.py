@@ -3,6 +3,7 @@ from __future__ import annotations
 """Use an LLM to pre-classify generated assertions for manual review."""
 
 import json
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -12,15 +13,14 @@ from ..llm.types import LLMCall, LLMResponse, hash_prompt
 from ..llm.observability import emit_llm_call, flush_observability
 from ..data.store import ResultStore
 
-CLASSIFIER_SYSTEM = """You are an expert in Selenium test evaluation. You will be given a gold-standard assertion and a generated assertion from a Selenium test.
+CLASSIFIER_SYSTEM = """You are an expert in Selenium test evaluation. You will be given a gold-standard assertion and a generated assertion for the same point of a Selenium test. The generated assertion compiled and PASSED against the live application, but its code differs from the gold standard.
 
 Classify the generated assertion into exactly one category:
 
-- correct: Semantically equivalent to the gold standard (may have different syntax)
-- over_assertive: Checks MORE than the gold standard (extra assertions or stricter)
-- under_assertive: Checks LESS than the gold standard (weaker, would pass when it should fail)
-- wrong_assertion: Checks the WRONG thing (different element, value, or logic)
-- not_executable: Does not compile or cannot run (syntax error, missing method)
+- correct: checks the same thing as the gold standard (same logic, different syntax)
+- over_assertive: checks MORE than the gold standard (extra assertions or a stricter check)
+- under_assertive: checks LESS than the gold standard (weaker; would still pass in some situations where the gold fails)
+- wrong_assertion: checks something else (different element, value or logic) that happens to hold
 
 Respond with ONLY a JSON object: {"classification": "<category>", "reason": "<one sentence>"}"""
 
@@ -29,14 +29,14 @@ CLASSIFIER_USER = """Gold standard assertion:
 {gold}
 ```
 
-Generated assertion:
+Generated assertion (passed on the live application):
 ```java
 {generated}
 ```
 
-The generated assertion {pass_status} when executed.
-
 Classify the generated assertion:"""
+
+REVIEW_CATEGORIES = {"correct", "over_assertive", "under_assertive", "wrong_assertion"}
 
 
 CRAWLED_CLASSIFIER_SYSTEM = """You are an expert in Selenium test evaluation. A web crawler (Crawljax) automatically generated a Selenium test that replays a sequence of user actions; an LLM then generated the test's assertion. Crawljax's own built-in oracle for the same point is a generic state-equivalence check: it compares the entire current DOM (and screenshot) against the state observed during crawling, plus generic invariants.
@@ -74,58 +74,42 @@ ProgressCallback = Callable[[int, int, str], None]
 
 
 def pre_classify_results(
-    results: list[ExperimentResult],
+    groups: list[dict],
     llm: LLMClient,
     on_progress: ProgressCallback | None = None,
     store: ResultStore | None = None,
     classifier_model: str | None = None,
 ) -> dict[str, str]:
-    """Pre-classify all results using an LLM.
+    """Suggest a label for each unique answer awaiting review.
 
-    Returns a dict of "app|class_name|treatment|model" -> classification.
+    `groups` come from excel_export.review_groups. Returns
+    "app|class_name|answer_key" -> suggested category ("" if none).
     """
     classifications = {}
-    total = len(results)
-
-    for i, r in enumerate(results):
-        key = f"{r.test_record.app}|{r.test_record.class_name}|{r.treatment}|{r.model}"
-
-        if not r.generated_assertion.strip():
-            classifications[key] = "not_executable"
-            if on_progress:
-                on_progress(i + 1, total, f"{r.test_record.class_name}: not_executable (empty)")
-            continue
-
-        pass_status = "PASSED" if r.passes else "FAILED"
-        user_msg = CLASSIFIER_USER.format(
-            gold=r.test_record.gold_standard,
-            generated=r.generated_assertion,
-            pass_status=pass_status,
-        )
-
+    total = len(groups)
+    for i, g in enumerate(groups):
+        key = f"{g['app']}|{g['class_name']}|{g['answer_key']}"
+        r = g["result"]
+        user_msg = CLASSIFIER_USER.format(gold=g["gold"], generated=g["answer"])
         try:
             response = llm.generate(CLASSIFIER_SYSTEM, user_msg)
-            parsed = _parse_classification(response.text)
+            parsed = _parse_classification(response.text, REVIEW_CATEGORIES)
             classifications[key] = parsed
             if store:
                 _save_and_emit_llm_call(store, _build_pre_classification_call(
                     r, classifier_model or response.model, user_msg, response
                 ))
             if on_progress:
-                on_progress(i + 1, total, f"{r.test_record.class_name} [{r.treatment}]: {parsed}")
+                on_progress(i + 1, total, f"{g['class_name']}: {parsed or '(unparseable)'}")
         except Exception as e:
             classifications[key] = ""
             if store:
-                error_response = LLMResponse(
-                    text=str(e),
-                    provider="",
-                    model=classifier_model or r.model,
-                )
+                error_response = LLMResponse(text=str(e), provider="", model=classifier_model or r.model)
                 _save_and_emit_llm_call(store, _build_pre_classification_call(
                     r, classifier_model or r.model, user_msg, error_response
                 ))
             if on_progress:
-                on_progress(i + 1, total, f"{r.test_record.class_name}: error ({e})")
+                on_progress(i + 1, total, f"{g['class_name']}: error ({e})")
 
     flush_observability()
     return classifications
@@ -251,23 +235,19 @@ def _build_pre_classification_call(
     )
 
 
-def _parse_classification(response: str, valid: set[str] | None = None) -> str:
-    if valid is None:
-        valid = {"correct", "over_assertive", "under_assertive", "wrong_assertion", "not_executable"}
+def _parse_classification(response: str, valid: set[str]) -> str:
+    """The category from the model's JSON reply; "" when it cannot be read.
 
+    Falls back to a whole-word search only when exactly one category name
+    appears, so e.g. "incorrect" is never read as "correct".
+    """
     try:
         start = response.index("{")
         end = response.rindex("}") + 1
-        data = json.loads(response[start:end])
-        classification = data.get("classification", "").strip()
+        classification = str(json.loads(response[start:end]).get("classification", "")).strip()
         if classification in valid:
             return classification
     except (ValueError, json.JSONDecodeError):
         pass
-
-    response_lower = response.lower()
-    for cat in valid:
-        if cat in response_lower:
-            return cat
-
-    return ""
+    found = {c for c in valid if re.search(rf"(?<![\w-]){re.escape(c)}(?![\w-])", response.lower())}
+    return found.pop() if len(found) == 1 else ""

@@ -191,8 +191,13 @@ class RetryClient:
         raise last_error
 
 
-def create_client(config: Config, model_name: str | None = None) -> LLMClient:
-    """Create an LLM client from config."""
+def create_client(config: Config, model_name: str | None = None, run: int = 1) -> LLMClient:
+    """Create an LLM client from config.
+
+    `run` is the repetition index: each run has its own cache entries, so a
+    repeated run makes fresh API calls while re-running the same run replays
+    its cached answers.
+    """
     model_name = model_name or config.default_model
     model_config = config.models[model_name]
     provider = model_config["provider"]
@@ -235,7 +240,7 @@ def create_client(config: Config, model_name: str | None = None) -> LLMClient:
         cache_dir = config.output_dir / "cache" / model_name
         settings = (
             f"{model_config['model_id']}|temperature={model_config['temperature']}"
-            f"|max_tokens={model_config['max_tokens']}"
+            f"|max_tokens={model_config['max_tokens']}|run={run}"
         )
         client = CachedClient(client, cache_dir, settings)
 

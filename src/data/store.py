@@ -30,6 +30,7 @@ class ResultStore:
                 method_name TEXT NOT NULL,
                 treatment TEXT NOT NULL,
                 source TEXT NOT NULL DEFAULT 'bewt',
+                run INTEGER NOT NULL DEFAULT 1,
                 model TEXT NOT NULL,
                 prompt TEXT,
                 raw_response TEXT,
@@ -43,9 +44,10 @@ class ResultStore:
                 manual_notes TEXT,
                 llm_preclassification TEXT,
                 semantic_similarity REAL DEFAULT 0.0,
+                failure_type TEXT,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(app, version, class_name, treatment, model, source)
+                UNIQUE(app, version, class_name, treatment, model, source, run)
             );
 
             CREATE INDEX IF NOT EXISTS idx_experiments_app ON experiments(app);
@@ -62,6 +64,7 @@ class ResultStore:
                 method_name TEXT NOT NULL,
                 treatment TEXT NOT NULL,
                 source TEXT NOT NULL DEFAULT 'bewt',
+                run INTEGER NOT NULL DEFAULT 1,
                 model TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 system_prompt TEXT NOT NULL,
@@ -101,6 +104,7 @@ class ResultStore:
             "manual_error_category": "TEXT",
             "manual_notes": "TEXT",
             "llm_preclassification": "TEXT",
+            "failure_type": "TEXT",
         }
         for column, definition in column_defs.items():
             if column not in existing:
@@ -124,18 +128,18 @@ class ResultStore:
         data = result.to_dict()
         self.conn.execute("""
             INSERT OR REPLACE INTO experiments
-            (app, variant, version, class_name, method_name, treatment, source, model,
+            (app, variant, version, class_name, method_name, treatment, source, run, model,
              prompt, raw_response, generated_assertion, gold_standard,
-             compiles, passes, exact_match, error_category, semantic_similarity, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             compiles, passes, exact_match, error_category, semantic_similarity, failure_type, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["app"], data["variant"], data["version"],
             data["class_name"], data["method_name"],
-            data["treatment"], data["source"], data["model"],
+            data["treatment"], data["source"], data["run"], data["model"],
             result.prompt, result.raw_response,
             data["generated_assertion"], data["gold_standard"],
             int(data["compiles"]), int(data["passes"]), int(data["exact_match"]),
-            data["error_category"], data["semantic_similarity"], data["notes"],
+            data["error_category"], data["semantic_similarity"], data["failure_type"], data["notes"],
         ))
         self.conn.commit()
         return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -167,12 +171,12 @@ class ResultStore:
         return [dict(row) for row in rows]
 
     def has_result(self, app: str, version: str, class_name: str, treatment: str,
-                   model: str, source: str = "bewt") -> bool:
+                   model: str, source: str = "bewt", run: int = 1) -> bool:
         """Check if a result already exists (for resumability)."""
         row = self.conn.execute(
             "SELECT 1 FROM experiments WHERE app=? AND version=? AND class_name=? "
-            "AND treatment=? AND model=? AND source=?",
-            (app, version, class_name, treatment, model, source),
+            "AND treatment=? AND model=? AND source=? AND run=?",
+            (app, version, class_name, treatment, model, source, run),
         ).fetchone()
         return row is not None
 
@@ -205,15 +209,15 @@ class ResultStore:
         data = call.to_dict()
         cursor = self.conn.execute("""
             INSERT INTO llm_calls
-            (experiment_id, call_type, app, class_name, method_name, treatment, source, model, provider,
+            (experiment_id, call_type, app, class_name, method_name, treatment, source, run, model, provider,
              system_prompt, user_prompt, prompt_hash, raw_response,
              input_tokens, output_tokens, total_tokens, cached_input_tokens,
              cache_creation_input_tokens, cache_read_input_tokens,
              reasoning_tokens, cost_usd, latency_ms, from_cache, served_model)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["experiment_id"], data["call_type"], data["app"], data["class_name"],
-            data["method_name"], data["treatment"], data["source"],
+            data["method_name"], data["treatment"], data["source"], data["run"],
             data["model"], data["provider"],
             data["system_prompt"], data["user_prompt"], data["prompt_hash"], data["raw_response"],
             data["input_tokens"], data["output_tokens"], data["total_tokens"],
@@ -259,7 +263,7 @@ class ResultStore:
         replayed from the local cache cost nothing and are counted separately
         as `cache_hits`.
         """
-        allowed = {None, "treatment", "model", "app", "call_type", "source"}
+        allowed = {None, "treatment", "model", "app", "call_type", "source", "run"}
         if group_by not in allowed:
             raise ValueError(f"group_by must be one of: {', '.join(sorted(v for v in allowed if v))}")
 
@@ -296,6 +300,7 @@ class ResultStore:
                 e.method_name,
                 e.treatment,
                 e.source,
+                e.run,
                 e.model,
                 c.input_tokens,
                 c.output_tokens,
@@ -314,7 +319,7 @@ class ResultStore:
             LEFT JOIN llm_calls c
                 ON c.experiment_id = e.id
                 AND c.call_type = 'generation'
-            ORDER BY e.app, e.class_name, e.method_name, e.model, e.treatment
+            ORDER BY e.app, e.class_name, e.method_name, e.model, e.run, e.treatment
         """).fetchall()
         return [dict(row) for row in rows]
 
@@ -337,6 +342,9 @@ class ResultStore:
                 test_record=record,
                 treatment=row["treatment"], model=row["model"],
                 source=row["source"],
+                run=row["run"],
+                manual_category=row.get("manual_error_category") or None,
+                failure_type=row.get("failure_type") or "",
                 prompt=row.get("prompt", "") or "",
                 raw_response=row.get("raw_response", "") or "",
                 generated_assertion=row.get("generated_assertion", "") or "",
@@ -364,6 +372,36 @@ class ResultStore:
         cursor = self.conn.execute(query, params)
         self.conn.commit()
         return cursor.rowcount > 0
+
+    def _rows_with_answer(self, app: str, class_name: str, key: str, source: str) -> list[int]:
+        from ..evaluation.comparator import answer_key
+
+        rows = self.conn.execute(
+            "SELECT id, generated_assertion FROM experiments WHERE app=? AND class_name=? AND source=?",
+            (app, class_name, source),
+        ).fetchall()
+        return [row["id"] for row in rows if answer_key(row["generated_assertion"] or "") == key]
+
+    def apply_review_label(self, app: str, class_name: str, key: str, label: str,
+                           notes: str = "", source: str = "bewt") -> int:
+        """Set the manual label on every result of this test whose answer has
+        `key` (see comparator.answer_key). Returns the number of rows updated."""
+        ids = self._rows_with_answer(app, class_name, key, source)
+        self.conn.executemany(
+            "UPDATE experiments SET manual_error_category=?, manual_notes=? WHERE id=?",
+            [(label, notes, i) for i in ids],
+        )
+        self.conn.commit()
+        return len(ids)
+
+    def set_preclassification_for_answer(self, app: str, class_name: str, key: str,
+                                         label: str, source: str = "bewt") -> int:
+        ids = self._rows_with_answer(app, class_name, key, source)
+        self.conn.executemany(
+            "UPDATE experiments SET llm_preclassification=? WHERE id=?", [(label, i) for i in ids],
+        )
+        self.conn.commit()
+        return len(ids)
 
     def update_llm_preclassification(
         self,

@@ -118,7 +118,8 @@ def test_emit_llm_call_captures_ai_generation(fake_posthog):
     assert props["$ai_total_cost_usd"] == 0.0012
     assert props["$ai_cost_passthrough"] is True
     assert props["$ai_session_id"] == observability.RUN_ID
-    assert props["$ai_trace_id"] == f"{observability.RUN_ID}:bewt:mantisbt:AddNewProject:gpt-4o-mini"
+    assert props["$ai_trace_id"] == f"{observability.RUN_ID}:bewt:mantisbt:AddNewProject:gpt-4o-mini:run1"
+    assert props["run"] == 1
     assert props["$ai_span_name"] == "mantisbt · AddNewProject · TD · bewt"
     assert props["$process_person_profile"] is False
     assert "$ai_is_error" not in props

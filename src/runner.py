@@ -22,7 +22,7 @@ from .llm.response_parser import (
 )
 from .execution.java_injector import fill_placeholders
 from .execution.reference import ReferenceRunError, load_reference, run_isolated
-from .evaluation.comparator import classify_error, compute_semantic_similarity, check_exact_match
+from .evaluation.comparator import classify_outcome, compute_semantic_similarity, check_exact_match
 from .evaluation.reporter import generate_full_report
 from .data.store import ResultStore
 
@@ -47,6 +47,7 @@ def _build_generation_call(
     response: LLMResponse,
     experiment_id: int | None = None,
     source: str = "bewt",
+    run: int = 1,
 ) -> LLMCall:
     return LLMCall(
         experiment_id=experiment_id,
@@ -56,6 +57,7 @@ def _build_generation_call(
         method_name=record.method_name,
         treatment=treatment,
         source=source,
+        run=run,
         model=model_name,
         provider=response.provider,
         system_prompt=system,
@@ -88,6 +90,7 @@ def count_experiments(
     models: list[str],
     treatments: tuple[str, ...],
     limit: int | None = None,
+    runs: int = 1,
 ) -> int:
     """Count the total number of experiments that will be run."""
     total = 0
@@ -99,7 +102,7 @@ def count_experiments(
                                if f.stem not in ("BaseTest", "TestSuite", "Installer")])
                 if limit is not None:
                     n_tests = min(n_tests, limit)
-                total += n_tests * len(treatments)
+                total += n_tests * len(treatments) * runs
     return total
 
 
@@ -152,6 +155,7 @@ def run_experiment(
     execute: bool = False,
     on_progress: ProgressCallback | None = None,
     limit: int | None = None,
+    runs: int = 1,
 ) -> list[ExperimentResult]:
     """Run the full experiment pipeline.
 
@@ -162,6 +166,8 @@ def run_experiment(
         treatments: Treatment codes to run.
         execute: If True, compile and run assertions against live apps.
         on_progress: Callback for progress reporting.
+        runs: Repetitions; every (test, treatment) is generated `runs` times
+            with independent LLM calls.
 
     Returns:
         List of ExperimentResult objects.
@@ -176,7 +182,7 @@ def run_experiment(
             except ReferenceRunError as e:
                 raise MissingContextError(f"--execute needs a reference run: {e}")
 
-    total = count_experiments(config, apps, models, treatments, limit=limit)
+    total = count_experiments(config, apps, models, treatments, limit=limit, runs=runs)
     store = ResultStore(config.output_dir / "results.db")
     all_results = []
     completed = 0
@@ -185,9 +191,9 @@ def run_experiment(
         if on_progress:
             on_progress(completed, total, treatment, class_name, message)
 
-    for model_name in models:
-        _progress("", "", f"model:{model_name}")
-        llm = create_client(config, model_name)
+    for model_name, run in [(m, r) for m in models for r in range(1, runs + 1)]:
+        _progress("", "", f"model:{model_name}" + (f" (run {run}/{runs})" if runs > 1 else ""))
+        llm = create_client(config, model_name, run=run)
 
         for app_name in apps:
             test_dir = config.get_app_test_path(app_name)
@@ -216,7 +222,7 @@ def run_experiment(
                     completed += 1
 
                     # Resumability
-                    if store.has_result(app_name, version, record.class_name, t, model_name):
+                    if store.has_result(app_name, version, record.class_name, t, model_name, run=run):
                         _progress(t, record.class_name, "skipped")
                         continue
 
@@ -265,7 +271,7 @@ def run_experiment(
                             model=model_name,
                         )
                         result = ExperimentResult(
-                            test_record=record, treatment=t, model=model_name,
+                            test_record=record, treatment=t, model=model_name, run=run,
                             prompt=user, raw_response=str(e),
                             generated_assertion="",
                             error_category=ErrorCategory.NOT_EXECUTABLE,
@@ -273,7 +279,8 @@ def run_experiment(
                         )
                         experiment_id = store.save_result(result)
                         _save_and_emit_llm_call(store, _build_generation_call(
-                            record, t, model_name, system, user, error_response, experiment_id
+                            record, t, model_name, system, user, error_response, experiment_id,
+                            run=run,
                         ))
                         all_results.append(result)
                         _progress(t, record.class_name, f"error:{e}")
@@ -284,7 +291,7 @@ def run_experiment(
                     valid = validate_assertion(generated)
 
                     result = ExperimentResult(
-                        test_record=record, treatment=t, model=model_name,
+                        test_record=record, treatment=t, model=model_name, run=run,
                         prompt=user, raw_response=raw_response,
                         generated_assertion=generated,
                     )
@@ -311,8 +318,11 @@ def run_experiment(
                             config, app_name, record.class_name, filled, work_dir,
                         )
                         result.compiles = compile_res.success
+                        error_type = ""
                         if test_res is not None:
                             result.passes = test_res.passed
+                            error_type = test_res.error_type
+                            result.failure_type = "" if test_res.passed else error_type
                             if test_res.error_message:
                                 notes.append(test_res.error_message[:500])
                         else:
@@ -322,9 +332,9 @@ def run_experiment(
                         result.semantic_similarity = compute_semantic_similarity(
                             generated, record.assertions
                         )
-                        result.error_category = classify_error(
+                        result.error_category = classify_outcome(
                             generated, record.assertions,
-                            result.compiles, result.passes,
+                            result.compiles, result.passes, error_type,
                         )
                         status = "PASS" if result.passes else "FAIL"
                         _progress(t, record.class_name,
@@ -333,7 +343,8 @@ def run_experiment(
                     result.notes = " | ".join(notes)
                     experiment_id = store.save_result(result)
                     _save_and_emit_llm_call(store, _build_generation_call(
-                        record, t, model_name, system, user, llm_response, experiment_id
+                        record, t, model_name, system, user, llm_response, experiment_id,
+                        run=run,
                     ))
                     all_results.append(result)
 

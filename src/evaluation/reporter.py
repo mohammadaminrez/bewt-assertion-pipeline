@@ -7,35 +7,27 @@ import json
 from pathlib import Path
 
 from ..models import ExperimentResult
-from .metrics import (
-    AggregateMetrics,
-    compute_aggregate_metrics,
-    compute_per_app_metrics,
-    compute_per_treatment_metrics,
-    compute_per_model_metrics,
-    statistical_tests,
-)
+from .metrics import CATEGORIES, AggregateMetrics, compute_grouped_metrics, statistical_tests
 
 
 def generate_full_report(results: list[ExperimentResult], output_dir: Path) -> None:
     """Generate all report files."""
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Raw results CSV
     write_raw_csv(results, output_dir / "raw_results.csv")
 
-    # Aggregate tables
-    write_treatment_table(results, output_dir)
-    write_app_table(results, output_dir)
-    write_model_table(results, output_dir)
+    by_treatment = compute_grouped_metrics(results, lambda r: (r.model, r.treatment))
+    _write_metrics_csv(by_treatment, ["model", "treatment"], output_dir / "by_treatment.csv")
+    _write_metrics_csv(
+        compute_grouped_metrics(results, lambda r: (r.model, r.test_record.app, r.treatment)),
+        ["model", "app", "treatment"], output_dir / "by_app.csv",
+    )
+    _write_metrics_csv(
+        compute_grouped_metrics(results, lambda r: (r.model,)), ["model"], output_dir / "by_model.csv",
+    )
 
-    # Statistical tests
     stats = statistical_tests(results)
     (output_dir / "statistical_tests.json").write_text(json.dumps(stats, indent=2))
-
-    # LaTeX tables
-    write_latex_tables(results, output_dir)
-
+    write_latex_tables(by_treatment, stats, output_dir)
 
 
 def write_crawled_comparison(
@@ -104,7 +96,6 @@ def write_raw_csv(results: list[ExperimentResult], path: Path) -> None:
     """Write raw results to CSV."""
     if not results:
         return
-
     fieldnames = list(results[0].to_dict().keys())
     with open(path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -113,104 +104,87 @@ def write_raw_csv(results: list[ExperimentResult], path: Path) -> None:
             writer.writerow(r.to_dict())
 
 
-def write_treatment_table(results: list[ExperimentResult], output_dir: Path) -> None:
-    """Write per-treatment comparison table."""
-    metrics = compute_per_treatment_metrics(results)
-    _write_metrics_csv(metrics, output_dir / "by_treatment.csv")
-
-
-def write_app_table(results: list[ExperimentResult], output_dir: Path) -> None:
-    """Write per-app comparison table."""
-    metrics = compute_per_app_metrics(results)
-    _write_metrics_csv(metrics, output_dir / "by_app.csv")
-
-
-def write_model_table(results: list[ExperimentResult], output_dir: Path) -> None:
-    """Write per-model comparison table."""
-    metrics = compute_per_model_metrics(results)
-    _write_metrics_csv(metrics, output_dir / "by_model.csv")
-
-
-def _write_metrics_csv(metrics: dict[str, AggregateMetrics], path: Path) -> None:
-    """Write an AggregateMetrics dict to CSV."""
-    fieldnames = [
-        "group", "total", "compiles", "passes", "exact_matches",
-        "avg_semantic_similarity", "precision", "recall", "f1_score",
-        "correct", "over_assertive", "under_assertive", "wrong_assertion", "not_executable",
+def _write_metrics_csv(metrics: dict[tuple, AggregateMetrics], key_names: list[str], path: Path) -> None:
+    fieldnames = key_names + [
+        "tests", "runs", "answers", "pass_rate", "pass_rate_sd_runs", "pass_rate_min_run",
+        "pass_rate_max_run", "compile_rate", "exact_rate", "avg_textual_similarity", *CATEGORIES,
     ]
-
     with open(path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for group_name, m in sorted(metrics.items()):
-            row = {
-                "group": group_name,
-                "total": m.total,
-                "compiles": m.compiles,
-                "passes": m.passes,
-                "exact_matches": m.exact_matches,
-                "avg_semantic_similarity": f"{m.avg_semantic_similarity:.4f}",
-                "precision": f"{m.precision:.4f}",
-                "recall": f"{m.recall:.4f}",
-                "f1_score": f"{m.f1_score:.4f}",
-            }
-            for cat in ["correct", "over_assertive", "under_assertive", "wrong_assertion", "not_executable"]:
-                row[cat] = m.error_distribution.get(cat, 0)
+        for key, m in metrics.items():
+            row = dict(zip(key_names, key))
+            row.update({
+                "tests": m.tests,
+                "runs": m.runs,
+                "answers": m.total,
+                "pass_rate": f"{m.pass_rate:.4f}",
+                "pass_rate_sd_runs": f"{m.pass_rate_sd:.4f}",
+                "pass_rate_min_run": f"{min(m.pass_rate_runs):.4f}",
+                "pass_rate_max_run": f"{max(m.pass_rate_runs):.4f}",
+                "compile_rate": f"{m.compiles / m.total:.4f}",
+                "exact_rate": f"{m.exact_matches / m.total:.4f}",
+                "avg_textual_similarity": f"{m.avg_textual_similarity:.4f}",
+            })
+            row.update({c: m.categories.get(c, 0) for c in CATEGORIES})
             writer.writerow(row)
 
 
-def write_latex_tables(results: list[ExperimentResult], output_dir: Path) -> None:
-    """Generate LaTeX tables ready for thesis insertion."""
-    treatment_metrics = compute_per_treatment_metrics(results)
+def _p(value: float | None) -> str:
+    if value is None:
+        return "--"
+    return "$<$0.001" if value < 0.001 else f"{value:.3f}"
 
+
+def write_latex_tables(by_treatment: dict[tuple, AggregateMetrics], stats: dict, output_dir: Path) -> None:
+    """Generate LaTeX tables ready for thesis insertion."""
     latex = r"""\begin{table}[htbp]
 \centering
-\caption{Comparison of assertion generation across treatments}
+\caption{Assertion generation per treatment (pass rate on the live application; mean $\pm$ SD across runs)}
 \label{tab:treatment_comparison}
-\begin{tabular}{l|ccc|ccc|c}
+\begin{tabular}{ll|cccc}
 \toprule
-\textbf{Treatment} & \textbf{Compiles} & \textbf{Passes} & \textbf{Exact} & \textbf{P} & \textbf{R} & \textbf{F1} & \textbf{Sim.} \\
+\textbf{Model} & \textbf{Treatment} & \textbf{Pass rate} & \textbf{Compiles} & \textbf{Exact} & \textbf{Textual sim.} \\
 \midrule
 """
-
-    for treatment in sorted(treatment_metrics.keys()):
-        m = treatment_metrics[treatment]
-        compile_pct = m.compiles / m.total * 100 if m.total > 0 else 0
-        pass_pct = m.passes / m.total * 100 if m.total > 0 else 0
-        exact_pct = m.exact_matches / m.total * 100 if m.total > 0 else 0
-
+    for (model, treatment), m in by_treatment.items():
         latex += (
-            f"{treatment} & {compile_pct:.1f}\\% & {pass_pct:.1f}\\% & {exact_pct:.1f}\\% "
-            f"& {m.precision:.3f} & {m.recall:.3f} & {m.f1_score:.3f} "
-            f"& {m.avg_semantic_similarity:.3f} \\\\\n"
+            f"{model} & {treatment} & {m.pass_rate * 100:.1f}\\% $\\pm$ {m.pass_rate_sd * 100:.1f} "
+            f"& {m.compiles / m.total * 100:.1f}\\% & {m.exact_matches / m.total * 100:.1f}\\% "
+            f"& {m.avg_textual_similarity:.3f} \\\\\n"
         )
+    latex += "\\bottomrule\n\\end{tabular}\n\\end{table}\n"
 
-    latex += r"""\bottomrule
-\end{tabular}
-\end{table}
-"""
-
-    # Error distribution table
     latex += r"""
 \begin{table}[htbp]
 \centering
-\caption{Error type distribution across treatments}
+\caption{Final category of the generated assertions (counts over all runs)}
 \label{tab:error_distribution}
-\begin{tabular}{l|ccccc}
+\begin{tabular}{ll|cccccc}
 \toprule
-\textbf{Treatment} & \textbf{Correct} & \textbf{Over} & \textbf{Under} & \textbf{Wrong} & \textbf{N/E} \\
+\textbf{Model} & \textbf{Treatment} & \textbf{Correct} & \textbf{Over} & \textbf{Under} & \textbf{Wrong} & \textbf{N/E} & \textbf{Unreviewed} \\
 \midrule
 """
+    for (model, treatment), m in by_treatment.items():
+        vals = " & ".join(str(m.categories.get(c, 0)) for c in CATEGORIES)
+        latex += f"{model} & {treatment} & {vals} \\\\\n"
+    latex += "\\bottomrule\n\\end{tabular}\n\\end{table}\n"
 
-    for treatment in sorted(treatment_metrics.keys()):
-        m = treatment_metrics[treatment]
-        cats = ["correct", "over_assertive", "under_assertive", "wrong_assertion", "not_executable"]
-        vals = [str(m.error_distribution.get(c, 0)) for c in cats]
-        latex += f"{treatment} & {' & '.join(vals)} \\\\\n"
-
-    latex += r"""\bottomrule
-\end{tabular}
-\end{table}
+    latex += r"""
+\begin{table}[htbp]
+\centering
+\caption{Pairwise treatment comparison of per-test pass rates (Wilcoxon signed-rank, Holm-adjusted)}
+\label{tab:treatment_tests}
+\begin{tabular}{ll|cccc}
+\toprule
+\textbf{Model} & \textbf{Pair} & \textbf{$n_{\neq}$} & \textbf{$r_{rb}$} & \textbf{$p$} & \textbf{$p_{Holm}$} \\
+\midrule
 """
-
+    for model, res in stats.get("models", {}).items():
+        for pair, w in res.get("primary_pass_rate", {}).get("pairwise_wilcoxon", {}).items():
+            latex += (
+                f"{model} & {pair.replace('_vs_', ' vs ')} & {w['n_nonzero']} & {w['rank_biserial']:.2f} "
+                f"& {_p(w['p'])} & {_p(w['p_holm'])} \\\\\n"
+            )
+    latex += "\\bottomrule\n\\end{tabular}\n\\end{table}\n"
     (output_dir / "latex_tables.tex").write_text(latex)

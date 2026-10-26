@@ -43,15 +43,18 @@ def test_pre_classify_results_logs_pre_classification_call(tmp_path, monkeypatch
         generated_assertion='assertEquals("x", page.value());',
     )
 
+    group = {"app": "mantisbt", "class_name": "AddNewProject", "answer_key": "abc123",
+             "gold": 'assertEquals("x", page.get());', "answer": result.generated_assertion,
+             "occurrences": ["generation-model/D/run1"], "result": result}
     classifications = pre_classify_results(
-        [result],
+        [group],
         FakeClassifierClient(),
         store=store,
         classifier_model="gpt-4o-mini",
     )
     calls = store.get_llm_calls(call_type="pre_classification")
 
-    assert classifications == {"mantisbt|AddNewProject|D|generation-model": "correct"}
+    assert classifications == {"mantisbt|AddNewProject|abc123": "correct"}
     assert len(calls) == 1
     assert calls[0]["call_type"] == "pre_classification"
     assert calls[0]["app"] == "mantisbt"
@@ -71,3 +74,12 @@ def test_pre_classify_results_logs_pre_classification_call(tmp_path, monkeypatch
     assert emitted[0].id == calls[0]["id"]
     assert emitted[0].call_type == "pre_classification"
     store.close()
+
+
+def test_classifier_reply_parsing_never_reads_incorrect_as_correct():
+    from src.evaluation.llm_classifier import REVIEW_CATEGORIES, _parse_classification
+
+    assert _parse_classification('{"classification": "under_assertive", "reason": "x"}', REVIEW_CATEGORIES) == "under_assertive"
+    assert _parse_classification("This is incorrect: wrong_assertion", REVIEW_CATEGORIES) == "wrong_assertion"
+    assert _parse_classification("incorrect", REVIEW_CATEGORIES) == ""
+    assert _parse_classification("correct or over_assertive?", REVIEW_CATEGORIES) == ""

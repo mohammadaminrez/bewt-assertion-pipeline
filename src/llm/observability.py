@@ -56,9 +56,9 @@ def _span_name(call: LLMCall) -> str:
 
 
 def _trace_id(call: LLMCall) -> str:
-    """Group every call for one test and model within a run into one trace,
-    so the A/B/C/D generations of a test sit side by side."""
-    return ":".join([RUN_ID, call.source, call.app, call.class_name, call.model])
+    """Group every call for one test, model and repetition within a CLI run
+    into one trace, so the A/B/C/D generations of a test sit side by side."""
+    return ":".join([RUN_ID, call.source, call.app, call.class_name, call.model, f"run{call.run}"])
 
 
 def _generation_properties(call: LLMCall) -> dict:
@@ -83,6 +83,7 @@ def _generation_properties(call: LLMCall) -> dict:
         "method_name": call.method_name,
         "treatment": call.treatment,
         "source": call.source,
+        "run": call.run,
         "prompt_hash": call.prompt_hash,
         "served_model": call.served_model,
     }

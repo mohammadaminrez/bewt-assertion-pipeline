@@ -25,6 +25,9 @@ class ErrorCategory(Enum):
     UNDER_ASSERTIVE = "under_assertive"
     WRONG_ASSERTION = "wrong_assertion"
     NOT_EXECUTABLE = "not_executable"
+    # Passes but differs from the gold assertion: only a human can tell
+    # correct / over- / under-assertive / wrong apart (manual review).
+    NEEDS_REVIEW = "needs_review"
 
 
 @dataclass
@@ -138,6 +141,14 @@ class ExperimentResult:
     semantic_similarity: float = 0.0
     notes: str = ""
     source: str = "bewt"      # test provenance: bewt (benchmark) | crawled (DANTE/Crawljax)
+    run: int = 1              # repetition index (each run is an independent LLM call)
+    manual_category: str | None = None  # final label from manual review, if any
+    failure_type: str = ""  # exception class when the test failed at runtime
+
+    @property
+    def final_category(self) -> str:
+        """Manual label when one exists, else the automatic category."""
+        return self.manual_category or self.error_category.value
 
     def to_dict(self) -> dict:
         return {
@@ -148,6 +159,7 @@ class ExperimentResult:
             "method_name": self.test_record.method_name,
             "treatment": self.treatment,
             "source": self.source,
+            "run": self.run,
             "model": self.model,
             "generated_assertion": self.generated_assertion,
             "gold_standard": self.test_record.gold_standard,
@@ -155,6 +167,9 @@ class ExperimentResult:
             "passes": self.passes,
             "exact_match": self.exact_match,
             "error_category": self.error_category.value,
+            "manual_category": self.manual_category,
+            "failure_type": self.failure_type,
+            "final_category": self.final_category,
             "semantic_similarity": self.semantic_similarity,
             "notes": self.notes,
         }

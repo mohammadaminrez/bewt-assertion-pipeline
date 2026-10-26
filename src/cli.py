@@ -21,10 +21,13 @@ from .variants.generator import write_variants
 from .variants.html_capture import capture_html_static
 from .execution.reference import ReferenceRunError, build_reference
 from .execution.controls import run_controls
-from .execution.docker_manager import DockerManager
-from .execution.app_setup import run_installer
 from .evaluation.reporter import generate_full_report
-from .evaluation.excel_export import export_results_to_excel, import_classifications_from_excel
+from .evaluation.excel_export import (
+    export_review_to_excel,
+    import_classifications_from_excel,
+    import_review_labels,
+    review_groups,
+)
 from .evaluation.prompt_export import export_llm_calls
 from .evaluation.usage_report import export_treatment_comparison
 from .data.store import ResultStore
@@ -229,16 +232,20 @@ def verify_execution(ctx, app):
 @click.option("--treatment", "-t", multiple=True, type=TreatmentType(), help="Treatment(s): A, B, C, D")
 @click.option("--execute", is_flag=True, default=False, help="Compile and run assertions against live apps (requires Maven + Docker)")
 @click.option("--limit", "-n", type=int, default=None, help="Limit number of tests per app (default: all)")
+@click.option("--runs", type=click.IntRange(min=1), default=1,
+              help="Repetitions: each test/treatment is generated this many times (independent LLM calls)")
 @click.option("--source", type=click.Choice(["bewt", "crawled"]), default="bewt",
               help="Test provenance: bewt (benchmark tests with gold assertions) or "
                    "crawled (DANTE/Crawljax-generated tests; treatments A/B/C only)")
 @click.pass_context
-def run(ctx, app, model, treatment, execute, limit, source):
+def run(ctx, app, model, treatment, execute, limit, runs, source):
     """Run the full experiment pipeline."""
     config = ctx.obj["config"]
     models = list(model) if model else [config.default_model]
 
     if source == "crawled":
+        if runs > 1:
+            raise click.ClickException("--runs is only supported for --source bewt.")
         if not app:
             raise click.ClickException(
                 "--source crawled requires an explicit --app (one crawled app per run)."
@@ -269,7 +276,7 @@ def run(ctx, app, model, treatment, execute, limit, source):
         if warnings and not click.confirm("Continue anyway?"):
             return
 
-    total = count_experiments(config, apps, models, treatments, limit=limit)
+    total = count_experiments(config, apps, models, treatments, limit=limit, runs=runs)
 
     def on_progress(completed, total_exp, t, class_name, message):
         progress = f"[{completed}/{total_exp}]"
@@ -297,7 +304,7 @@ def run(ctx, app, model, treatment, execute, limit, source):
     try:
         results = run_experiment(
             config, apps=apps, models=models, treatments=treatments,
-            execute=execute, on_progress=on_progress, limit=limit,
+            execute=execute, on_progress=on_progress, limit=limit, runs=runs,
         )
     except MissingContextError as e:
         raise click.ClickException(str(e))
@@ -735,43 +742,6 @@ def export_treatment_comparison_cmd(ctx, output):
 
 
 @main.command()
-@click.option("--app", "-a", required=True, help="App to set up")
-@click.pass_context
-def setup_app(ctx, app):
-    """Deploy and configure a web app (Docker + Installer)."""
-    config = ctx.obj["config"]
-    _validate_bewt_repo(config)
-
-    if app not in config.apps:
-        raise click.ClickException(f"Unknown app: {app}. Available: {', '.join(config.apps.keys())}")
-
-    warnings = _validate_maven()
-    for w in warnings:
-        click.echo(click.style(f"Warning: {w}", fg="yellow"))
-    if warnings and not click.confirm("Continue anyway?"):
-        return
-
-    docker = DockerManager(config)
-
-    click.echo(f"\n=== Setting up {app} ===")
-
-    # Step 1: Deploy
-    click.echo("Step 1: Deploy app...")
-    if not docker.deploy_app(app):
-        raise click.ClickException(f"Failed to deploy {app}. Make sure Docker is running or start the app manually.")
-
-    # Step 2: Run installer
-    click.echo("Step 2: Run installer...")
-    success = run_installer(config, app, on_progress=click.echo)
-
-    if success:
-        click.echo(click.style(f"\n{app} is ready.", fg="green"))
-        click.echo(f"You can now run: bewt-pipeline capture-html --app {app}")
-    else:
-        click.echo(click.style(f"\n{app} setup failed. Check the errors above.", fg="red"))
-
-
-@main.command()
 @click.pass_context
 def info(ctx):
     """Show information about configured apps and available tests."""
@@ -813,6 +783,15 @@ def export_excel(ctx, output, pre_classify, model, source):
         crawled_apps = {r.test_record.app for r in results}
         state_map = _load_crawled_state_maps(config, crawled_apps)
 
+    groups = review_groups(results) if source == "bewt" else []
+    if source == "bewt":
+        click.echo(f"{len(groups)} unique passing-but-different answers need review "
+                   f"({sum(len(g['occurrences']) for g in groups)} results).")
+        if not groups:
+            click.echo("Nothing to review: every result is decided by execution.")
+            store.close()
+            return
+
     pre_classifications = None
     if pre_classify:
         from .llm.client import create_client
@@ -825,32 +804,33 @@ def export_excel(ctx, output, pre_classify, model, source):
         _validate_api_keys(config, [model_name])
         llm = create_client(config, model_name)
 
-        click.echo(f"Pre-classifying {len(results)} results with {model_name}...")
         def on_progress(completed, total, message):
             click.echo(f"  [{completed}/{total}] {message}")
 
         if source == "crawled":
+            click.echo(f"Pre-classifying {len(results)} results with {model_name}...")
             pre_classifications = pre_classify_crawled_results(
                 results, llm, state_map, on_progress=on_progress,
                 store=store, classifier_model=model_name,
             )
+            for key, classification in pre_classifications.items():
+                if not classification:
+                    continue
+                app_name, class_name, treatment_name, result_model = key.split("|", 3)
+                store.update_llm_preclassification(
+                    app=app_name, class_name=class_name, treatment=treatment_name,
+                    model=result_model, llm_preclassification=classification, source=source,
+                )
         else:
+            click.echo(f"Pre-classifying {len(groups)} unique answers with {model_name}...")
             pre_classifications = pre_classify_results(
-                results, llm, on_progress=on_progress, store=store, classifier_model=model_name
+                groups, llm, on_progress=on_progress, store=store, classifier_model=model_name
             )
-        for key, classification in pre_classifications.items():
-            if not classification:
-                continue
-            app_name, class_name, treatment_name, result_model = key.split("|", 3)
-            store.update_llm_preclassification(
-                app=app_name,
-                class_name=class_name,
-                treatment=treatment_name,
-                model=result_model,
-                llm_preclassification=classification,
-                source=source,
-            )
-        click.echo(f"Pre-classification complete.")
+            for key, classification in pre_classifications.items():
+                if classification:
+                    app_name, class_name, answer = key.split("|", 2)
+                    store.set_preclassification_for_answer(app_name, class_name, answer, classification)
+        click.echo("Pre-classification complete (suggestions only; final labels are yours).")
 
     default_name = "manual_evaluation_crawled.xlsx" if source == "crawled" else "manual_evaluation.xlsx"
     output_path = Path(output) if output else config.output_dir / "reports" / default_name
@@ -866,9 +846,9 @@ def export_excel(ctx, output, pre_classify, model, source):
             oracle_results=oracle_results,
         )
     else:
-        export_results_to_excel(results, output_path, pre_classifications=pre_classifications)
+        export_review_to_excel(groups, output_path, pre_classifications=pre_classifications)
 
-    click.echo(f"Exported {len(results)} results to {output_path}")
+    click.echo(f"Exported to {output_path}")
     click.echo(f"Fill in the 'Manual Classification' column, then run: bewt-pipeline import-excel --source {source}")
     store.close()
 
@@ -889,6 +869,25 @@ def import_excel(ctx, input_path, source):
     excel_path = Path(input_path) if input_path else config.output_dir / "reports" / default_name
     if not excel_path.exists():
         raise click.ClickException(f"Excel file not found: {excel_path}")
+
+    if source == "bewt":
+        try:
+            labels = import_review_labels(excel_path)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if not labels:
+            raise click.ClickException("No manual classifications found in the Excel file.")
+        store = ResultStore(db_path)
+        updated = sum(
+            store.apply_review_label(l["app"], l["class_name"], l["answer_key"], l["label"], l["notes"])
+            for l in labels
+        )
+        remaining = len(review_groups(store.load_experiment_results()))
+        store.close()
+        click.echo(f"Applied {len(labels)} labels to {updated} results; "
+                   f"{remaining} unique answers still need review.")
+        click.echo("Run 'bewt-pipeline report' to regenerate reports with the final categories.")
+        return
 
     annotations = import_classifications_from_excel(excel_path)
     if not annotations:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Compare generated assertions with gold-standard assertions."""
 
+import hashlib
 import re
 from ..models import AssertionRecord, AssertionType, ErrorCategory
 
@@ -14,44 +15,40 @@ def _strip_markers(code: str) -> str:
     return _MARKER_LINE.sub("", code)
 
 
-def classify_error(
+# Exceptions that mean "an assertion was evaluated and did not hold". Any
+# other exception is a runtime error in the generated code (e.g. a locator
+# that finds nothing) and makes the answer not executable.
+ASSERTION_FAILURES = {
+    "java.lang.AssertionError",
+    "org.junit.ComparisonFailure",
+    "junit.framework.AssertionFailedError",
+    "junit.framework.ComparisonFailure",
+}
+
+
+def classify_outcome(
     generated: str,
     gold_assertions: list[AssertionRecord],
     compiles: bool,
     passes: bool,
+    error_type: str = "",
 ) -> ErrorCategory:
-    """Classify the error type of a generated assertion."""
-    generated = _strip_markers(generated)
-    if not compiles:
+    """Category from execution facts alone; only certain cases are decided.
+
+    - does not compile, or throws a non-assertion exception -> not_executable
+    - runs and an assertion fails                            -> wrong_assertion
+    - passes and equals the gold (whitespace-insensitive)    -> correct
+    - passes but differs                                     -> needs_review
+    """
+    if not compiles or not generated.strip():
         return ErrorCategory.NOT_EXECUTABLE
-
-    if not generated.strip():
-        return ErrorCategory.NOT_EXECUTABLE
-
-    # Check exact match
-    gold_text = "\n".join(a.full_text for a in gold_assertions)
-    if _normalize(generated) == _normalize(gold_text):
-        return ErrorCategory.CORRECT
-
-    if passes:
-        # Passes but different from gold — could be correct, over, or under assertive
-        gen_count = _count_assertions(generated)
-        gold_count = len(gold_assertions)
-
-        if gen_count > gold_count:
-            return ErrorCategory.OVER_ASSERTIVE
-        elif gen_count < gold_count:
-            return ErrorCategory.UNDER_ASSERTIVE
-
-        # Same count but different — check if semantically equivalent
-        if _is_semantically_equivalent(generated, gold_assertions):
-            return ErrorCategory.CORRECT
-        else:
-            # Passes but tests different things
+    if not passes:
+        if error_type in ASSERTION_FAILURES:
             return ErrorCategory.WRONG_ASSERTION
-    else:
-        # Fails — wrong assertion
-        return ErrorCategory.WRONG_ASSERTION
+        return ErrorCategory.NOT_EXECUTABLE
+    if check_exact_match(generated, gold_assertions):
+        return ErrorCategory.CORRECT
+    return ErrorCategory.NEEDS_REVIEW
 
 
 def compute_semantic_similarity(
@@ -98,6 +95,12 @@ def compute_semantic_similarity(
     return sum(scores)
 
 
+def answer_key(code: str) -> str:
+    """Identity of an answer for review: equal keys = same code up to
+    whitespace and placeholder markers, so one label covers every run."""
+    return hashlib.sha1(_normalize(_strip_markers(code)).encode()).hexdigest()[:12]
+
+
 def check_exact_match(generated: str, gold_assertions: list[AssertionRecord]) -> bool:
     """Check if the generated assertion exactly matches the gold standard."""
     generated = _strip_markers(generated)
@@ -111,11 +114,6 @@ def _normalize(text: str) -> str:
     text = text.replace('( ', '(').replace(' )', ')')
     text = text.replace(' ;', ';')
     return text
-
-
-def _count_assertions(code: str) -> int:
-    """Count assertion calls in code."""
-    return len(re.findall(r'assert(?:Equals|True|False|NotNull|Null)\s*\(', code))
 
 
 def _extract_assertion_types(code: str) -> list[AssertionType]:
@@ -147,20 +145,6 @@ def _set_similarity(a: set, b: set) -> float:
     intersection = a & b
     union = a | b
     return len(intersection) / len(union) if union else 0.0
-
-
-def _is_semantically_equivalent(generated: str, gold_assertions: list[AssertionRecord]) -> bool:
-    """Heuristic check for semantic equivalence."""
-    gen_literals = _extract_string_literals(generated)
-    gold_literals = set()
-    for a in gold_assertions:
-        if a.expected_value:
-            val = a.resolved_expected or a.expected_value
-            gold_literals.add(val.strip('"'))
-        gold_literals.update(_extract_string_literals(a.full_text))
-
-    # If all expected values match, consider it equivalent
-    return gen_literals == gold_literals
 
 
 def _normalized_levenshtein(s1: str, s2: str) -> float:

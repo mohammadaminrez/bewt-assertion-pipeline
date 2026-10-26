@@ -82,6 +82,7 @@ class LLMCall:
     latency_ms: int | None = None
     from_cache: bool = False
     served_model: str | None = None
+    run: int = 1
     id: int | None = None
     created_at: str | None = None
 

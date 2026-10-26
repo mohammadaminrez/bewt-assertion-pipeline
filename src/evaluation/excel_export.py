@@ -10,7 +10,7 @@ from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from ..models import ExperimentResult
+from ..models import ErrorCategory, ExperimentResult
 
 CLASSIFICATION_OPTIONS = "correct,over_assertive,under_assertive,wrong_assertion,not_executable"
 
@@ -36,55 +36,102 @@ GUIDE_ROWS = [
 ]
 
 
-def export_results_to_excel(
-    results: list[ExperimentResult],
+REVIEW_OPTIONS = "correct,over_assertive,under_assertive,wrong_assertion"
+
+REVIEW_GUIDE_ROWS = [
+    ["Classification", "When to use (every answer here PASSED on the live app but differs from the gold)", "Example"],
+    ["correct", "Checks the same thing as the gold (same logic, different syntax)", 'Gold: assertEquals("updater", page.getAccessLevel(2))\nGenerated: assertTrue(page.getAccessLevel(2).equals("updater"))'],
+    ["over_assertive", "Checks MORE than the gold (extra assertions or a stricter check)", 'Gold: assertEquals("updater", page.getAccessLevel(2))\nGenerated: same + assertEquals("user001", page.getUsername(2))'],
+    ["under_assertive", "Checks LESS than the gold (weaker; would pass when it should fail)", 'Gold: assertEquals("Create your own content", p.getFirstArticle())\nGenerated: assertTrue(p.firstArticle.getText().contains("Create your own content"))'],
+    ["wrong_assertion", "Checks something else (different element, value or logic) that happens to hold", 'Gold: assertEquals("updater", page.getAccessLevel(2))\nGenerated: assertEquals("admin", page.getAccessLevel(1))'],
+]
+
+
+def review_groups(results: list[ExperimentResult]) -> list[dict]:
+    """Unique answers awaiting manual review (passed but differ from the gold),
+    one group per (app, test, answer) with every place the answer occurred."""
+    from .comparator import answer_key
+
+    groups: dict[tuple, dict] = {}
+    for r in results:
+        if r.final_category != ErrorCategory.NEEDS_REVIEW.value:
+            continue
+        key = answer_key(r.generated_assertion)
+        group = groups.setdefault((r.test_record.app, r.test_record.class_name, key), {
+            "app": r.test_record.app,
+            "class_name": r.test_record.class_name,
+            "answer_key": key,
+            "gold": r.test_record.gold_standard,
+            "answer": r.generated_assertion,
+            "occurrences": [],
+            "result": r,
+        })
+        group["occurrences"].append(f"{r.model}/{r.treatment}/run{r.run}")
+    return [groups[k] for k in sorted(groups)]
+
+
+def export_review_to_excel(
+    groups: list[dict],
     output_path: Path,
     pre_classifications: dict[str, str] | None = None,
 ) -> None:
-    """Export results to an Excel file for manual annotation.
-
-    Args:
-        results: Experiment results to export.
-        output_path: Path to write the .xlsx file.
-        pre_classifications: Optional dict of "app|class|treatment|model" -> classification
-            from LLM pre-classification.
-    """
-    rows = []
-    for r in results:
-        key = f"{r.test_record.app}|{r.test_record.class_name}|{r.treatment}|{r.model}"
-        pre_class = (pre_classifications or {}).get(key, "")
-        rows.append({
-            "App": r.test_record.app,
-            "Test Class": r.test_record.class_name,
-            "Method": r.test_record.method_name,
-            "Treatment": r.treatment,
-            "Model": r.model,
-            "Gold Standard Assertion": r.test_record.gold_standard,
-            "Generated Assertion": r.generated_assertion,
-            "Compiles": r.compiles,
-            "Pass/Fail": "PASS" if r.passes else "FAIL",
-            "Fail Reason": r.notes if not r.passes and r.notes and r.notes != "execution skipped" else "",
-            "Semantic Sim (heuristic)": round(r.semantic_similarity, 4),
-            "Auto-Classification": r.error_category.value,
-            "LLM Pre-Classification": pre_class,
-            "Manual Classification": "",
-            "Manual Notes": "",
-        })
-
-    df = pd.DataFrame(rows)
-    df.sort_values(by=["App", "Test Class", "Treatment", "Model"], inplace=True)
-    df.reset_index(drop=True, inplace=True)
-
+    """One row per unique answer to review; the label applies to every occurrence."""
+    rows = [{
+        "App": g["app"],
+        "Test Class": g["class_name"],
+        "Answer Key": g["answer_key"],
+        "Gold Standard Assertion": g["gold"],
+        "Generated Assertion (passed)": g["answer"],
+        "Occurrences": len(g["occurrences"]),
+        "Where (model/treatment/run)": ", ".join(sorted(g["occurrences"])),
+        "LLM Pre-Classification": (pre_classifications or {}).get(
+            f"{g['app']}|{g['class_name']}|{g['answer_key']}", ""),
+        "Manual Classification": "",
+        "Manual Notes": "",
+    } for g in groups]
+    columns = ["App", "Test Class", "Answer Key", "Gold Standard Assertion", "Generated Assertion (passed)",
+               "Occurrences", "Where (model/treatment/run)", "LLM Pre-Classification",
+               "Manual Classification", "Manual Notes"]
+    df = pd.DataFrame(rows, columns=columns)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_excel(str(output_path), index=False, sheet_name="Results", engine="openpyxl")
+    df.to_excel(str(output_path), index=False, sheet_name="Review", engine="openpyxl")
 
     wb = load_workbook(str(output_path))
-    ws = wb["Results"]
-
-    _apply_formatting(ws, len(df))
-    _add_guide_sheet(wb)
-
+    _apply_formatting(
+        wb["Review"], len(df), classification_options=REVIEW_OPTIONS,
+        col_widths={"App": 10, "Test Class": 24, "Answer Key": 14, "Gold Standard Assertion": 55,
+                    "Generated Assertion (passed)": 55, "Occurrences": 11,
+                    "Where (model/treatment/run)": 30, "LLM Pre-Classification": 20,
+                    "Manual Classification": 20, "Manual Notes": 30},
+    )
+    _add_guide_sheet(wb, guide_rows=REVIEW_GUIDE_ROWS)
     wb.save(str(output_path))
+
+
+def import_review_labels(excel_path: Path) -> list[dict]:
+    """Read filled-in review labels; rejects labels outside REVIEW_OPTIONS."""
+    df = pd.read_excel(str(excel_path), sheet_name="Review", engine="openpyxl", dtype=str)
+    allowed = set(REVIEW_OPTIONS.split(","))
+    labels, invalid = [], []
+    for index, row in df.iterrows():
+        label = row.get("Manual Classification")
+        if pd.isna(label) or not str(label).strip():
+            continue
+        label = str(label).strip()
+        if label not in allowed:
+            invalid.append(f"row {index + 2}: {label!r}")
+            continue
+        notes = row.get("Manual Notes")
+        labels.append({
+            "app": row["App"],
+            "class_name": row["Test Class"],
+            "answer_key": row["Answer Key"],
+            "label": label,
+            "notes": "" if pd.isna(notes) else str(notes),
+        })
+    if invalid:
+        raise ValueError("Invalid labels (allowed: " + REVIEW_OPTIONS + "): " + "; ".join(invalid))
+    return labels
 
 
 def export_crawled_results_to_excel(
