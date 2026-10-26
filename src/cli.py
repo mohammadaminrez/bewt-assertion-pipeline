@@ -201,6 +201,25 @@ def reference_run(ctx, app):
         f"{len(reference['snapshots'])} snapshots and HTML pages saved.", fg="green"))
 
 
+@main.command(name="rescore")
+@click.option("--app", "-a", required=True, help="App whose stored answers to re-execute")
+@click.pass_context
+def rescore(ctx, app):
+    """Re-execute and re-classify every stored answer with the current harness
+    (no LLM calls; the model's answers are not changed)."""
+    from .runner import rescore_experiment
+
+    config = ctx.obj["config"]
+    try:
+        summary = rescore_experiment(config, app, on_progress=click.echo)
+    except ReferenceRunError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"\nRe-executed {summary['rescored']} answers; {len(summary['changed'])} outcome(s) changed:")
+    for c in summary["changed"]:
+        click.echo(f"  {c['class']} [{c['treatment']}] run{c['run']}: "
+                   f"(compiles, passes, category) {c['old']} -> {c['new']}")
+
+
 @main.command(name="verify-execution")
 @click.option("--app", "-a", required=True, help="App whose execution harness to verify")
 @click.pass_context

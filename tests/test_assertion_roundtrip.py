@@ -145,3 +145,18 @@ def test_lan_ip_is_localized(tmp_path):
     base.write_text('String app_url = "http://192.168.1.141:8080/admin";')
     assert localize_base_url(tmp_path, "http://localhost:8080") == [base]
     assert base.read_text() == 'String app_url = "http://localhost:8080/admin";'
+
+
+def test_selenium_classes_used_by_an_answer_are_imported():
+    src = ("package tests;\n\nimport static org.junit.Assert.assertTrue;\n\nimport org.junit.Test;\n\n"
+           "class X { void m() { assertTrue(driver.findElement(By.id(\"alert\")).isDisplayed()); } }")
+    out = ensure_assert_imports(src)
+    assert "import org.openqa.selenium.By;" in out
+    assert "import org.junit.Assert;" not in out  # import lines are not usage
+    assert out.count("import static org.junit.Assert.assertTrue;") == 1
+
+
+def test_existing_or_wildcard_imports_are_respected():
+    src = ("package tests;\n\nimport org.openqa.selenium.*;\nimport static org.junit.Assert.*;\n\n"
+           "class X { void m() { assertTrue(d.findElement(By.id(\"a\")) != null); } }")
+    assert ensure_assert_imports(src) == src

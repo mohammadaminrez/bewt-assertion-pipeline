@@ -147,6 +147,83 @@ def _check_html_available(
         )
 
 
+def _variant_source(record, treatment: str, gherkin_map) -> tuple[str, bool, bool]:
+    """Test code shown for a treatment: (source, include_comments, has_spec).
+
+    A test without a Gherkin specification gets no comment (B equals A for
+    it); the prompt then says nothing about comments either.
+    """
+    ingredients = treatment_ingredients(treatment)
+    has_spec = gherkin_comment(record, gherkin_map) is not None
+    include_comments = ingredients.comments and has_spec
+    source = generate_variant_b(record, gherkin_map) if include_comments else generate_variant_a(record)
+    return source, include_comments, has_spec
+
+
+def _judge(config: Config, app_name: str, record, variant_source: str, generated: str,
+           model_name: str, treatment: str) -> dict:
+    """Execute one answer in isolation and decide its category."""
+    filled, fill_note = fill_placeholders(variant_source, generated)
+    work_dir = config.output_dir / "runs" / app_name / model_name / treatment / record.class_name
+    compile_res, test_res = run_isolated(config, app_name, record.class_name, filled, work_dir)
+    notes = [fill_note] if fill_note else []
+    passes, error_type = False, ""
+    if test_res is not None:
+        passes, error_type = test_res.passed, test_res.error_type
+        if test_res.error_message:
+            notes.append(test_res.error_message[:500])
+    else:
+        notes.append("; ".join(compile_res.errors[:3]))
+    return {
+        "compiles": compile_res.success,
+        "passes": passes,
+        "failure_type": "" if passes else error_type,
+        "category": classify_outcome(generated, record.assertions, compile_res.success, passes, error_type),
+        "notes": notes,
+    }
+
+
+def rescore_experiment(config: Config, app: str, on_progress: Callable[[str], None] = print) -> dict:
+    """Re-execute every stored answer with the current harness (no LLM calls).
+
+    The answers stay exactly as the model wrote them; only compiling,
+    running and classifying is redone. Manual review labels are cleared for
+    answers whose outcome changed, since they were given for another verdict.
+    """
+    load_reference(config, app)
+    records, _, _ = _load_app_records(config, app, None)
+    by_class = {r.class_name: r for r in records}
+    gherkin_map = parse_all_gherkin(config.get_gherkin_path(app))
+    store = ResultStore(config.output_dir / "results.db")
+    rows = [r for r in store.get_all_results() if r["app"] == app and r["source"] == "bewt"]
+    changed = []
+    for i, row in enumerate(rows, 1):
+        record = by_class[row["class_name"]]
+        source, _, _ = _variant_source(record, row["treatment"], gherkin_map)
+        generated = row["generated_assertion"] or ""
+        if not validate_assertion(generated):
+            continue
+        verdict = _judge(config, app, record, source, generated, row["model"], row["treatment"])
+        kept_notes = [n for n in (row["notes"] or "").split(" | ")
+                      if n.startswith(("no Gherkin spec", "answer contains"))]
+        new = (int(verdict["compiles"]), int(verdict["passes"]), verdict["category"].value)
+        old = (row["compiles"], row["passes"], row["error_category"])
+        if new != old:
+            changed.append({"class": row["class_name"], "treatment": row["treatment"], "run": row["run"],
+                            "old": old, "new": new})
+        store.conn.execute(
+            "UPDATE experiments SET compiles=?, passes=?, failure_type=?, error_category=?, notes=?"
+            + (", manual_error_category=NULL, manual_notes=NULL" if new != old else "")
+            + " WHERE id=?",
+            (*new[:2], verdict["failure_type"], new[2], " | ".join(kept_notes + verdict["notes"]), row["id"]),
+        )
+        store.conn.commit()
+        on_progress(f"  [{i}/{len(rows)}] {row['class_name']} [{row['treatment']}] run{row['run']}: "
+                    f"{verdict['category'].value}" + ("   (CHANGED)" if new != old else ""))
+    store.close()
+    return {"rescored": len(rows), "changed": changed}
+
+
 def run_experiment(
     config: Config,
     apps: list[str] | None = None,
@@ -230,15 +307,7 @@ def run_experiment(
                     # then assemble the prompt.
                     ingredients = treatment_ingredients(t)
 
-                    # A test without a Gherkin specification gets no comment
-                    # (B equals A for it); the prompt then says nothing about
-                    # comments either.
-                    has_spec = gherkin_comment(record, gherkin_map) is not None
-                    include_comments = ingredients.comments and has_spec
-                    if include_comments:
-                        variant_source = generate_variant_b(record, gherkin_map)
-                    else:
-                        variant_source = generate_variant_a(record)
+                    variant_source, include_comments, has_spec = _variant_source(record, t, gherkin_map)
                     notes = []
                     if ingredients.comments and not has_spec:
                         notes.append("no Gherkin spec: prompt has no comment")
@@ -310,32 +379,17 @@ def run_experiment(
                         notes.append("execution skipped")
                         _progress(t, record.class_name, f"sim={result.semantic_similarity:.2f}")
                     else:
-                        filled, fill_note = fill_placeholders(variant_source, generated)
-                        if fill_note:
-                            notes.append(fill_note)
-                        work_dir = config.output_dir / "runs" / app_name / model_name / t / record.class_name
-                        compile_res, test_res = run_isolated(
-                            config, app_name, record.class_name, filled, work_dir,
-                        )
-                        result.compiles = compile_res.success
-                        error_type = ""
-                        if test_res is not None:
-                            result.passes = test_res.passed
-                            error_type = test_res.error_type
-                            result.failure_type = "" if test_res.passed else error_type
-                            if test_res.error_message:
-                                notes.append(test_res.error_message[:500])
-                        else:
-                            notes.append("; ".join(compile_res.errors[:3]))
+                        verdict = _judge(config, app_name, record, variant_source, generated, model_name, t)
+                        result.compiles = verdict["compiles"]
+                        result.passes = verdict["passes"]
+                        result.failure_type = verdict["failure_type"]
+                        notes.extend(verdict["notes"])
 
                         result.exact_match = check_exact_match(generated, record.assertions)
                         result.semantic_similarity = compute_semantic_similarity(
                             generated, record.assertions
                         )
-                        result.error_category = classify_outcome(
-                            generated, record.assertions,
-                            result.compiles, result.passes, error_type,
-                        )
+                        result.error_category = verdict["category"]
                         status = "PASS" if result.passes else "FAIL"
                         _progress(t, record.class_name,
                                   f"{status}:sim={result.semantic_similarity:.2f},cat={result.error_category.value}")

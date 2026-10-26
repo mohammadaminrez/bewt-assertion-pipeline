@@ -53,20 +53,34 @@ def fill_placeholders(source: str, answer: str) -> tuple[str, str]:
     return "\n".join(lines), "; ".join(notes)
 
 
+# Classes a generated answer may use without importing them: the prompt
+# forbids imports, so the harness supplies them (simple name -> package).
+_KNOWN_CLASSES = {
+    "Assert": "org.junit",
+    "By": "org.openqa.selenium",
+    "WebElement": "org.openqa.selenium",
+    "Keys": "org.openqa.selenium",
+    "List": "java.util",
+}
+
+
 def ensure_assert_imports(source: str) -> str:
-    """Add a static import for every unqualified assertX(...) call the source
-    uses but does not import (wildcard imports count)."""
-    if re.search(r"import\s+static\s+org\.junit\.Assert\.\*\s*;", source):
-        return source
-    needed = sorted({
-        name for name in _STATIC_ASSERT_CALL.findall(source)
-        if not re.search(rf"import\s+static\s+org\.junit\.Assert\.{name}\s*;", source)
-    })
-    if "Assert." in source and not re.search(r"import\s+org\.junit\.Assert\s*;", source):
-        needed_plain = ["import org.junit.Assert;"]
-    else:
-        needed_plain = []
-    imports = [f"import static org.junit.Assert.{name};" for name in needed] + needed_plain
+    """Add the imports a generated answer needs but the test lacks: a static
+    import per unqualified assertX(...) call, and the well-known classes in
+    _KNOWN_CLASSES. Wildcard imports count; import lines are not usage."""
+    body = "\n".join(l for l in source.split("\n") if not l.strip().startswith(("import ", "package ")))
+    imports = []
+    if not re.search(r"import\s+static\s+org\.junit\.Assert\.\*\s*;", source):
+        imports += [
+            f"import static org.junit.Assert.{name};"
+            for name in sorted(set(_STATIC_ASSERT_CALL.findall(body)))
+            if not re.search(rf"import\s+static\s+org\.junit\.Assert\.{name}\s*;", source)
+        ]
+    for name, package in _KNOWN_CLASSES.items():
+        used = re.search(rf"(?<![\w.]){name}\s*[.<(\s]", body)
+        if used and not re.search(rf"import\s+{re.escape(package)}\.({name}|\*)\s*;", source) \
+                and not re.search(rf"import\s+[\w.]+\.{name}\s*;", source):
+            imports.append(f"import {package}.{name};")
     if not imports:
         return source
 
