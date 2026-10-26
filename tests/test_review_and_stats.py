@@ -104,8 +104,31 @@ def test_cochrans_q_and_mcnemar_known_values():
     assert _mcnemar_exact([1, 0], [1, 0])["p"] == 1.0
 
 
+def test_exact_wilcoxon_matches_scipy_exact_when_no_ties():
+    from scipy import stats
+
+    x = [0.9, 0.8, 0.75, 0.6, 0.55, 0.5, 0.42]
+    y = [0.1, 0.85, 0.2, 0.3, 0.6, 0.05, 0.4]
+    ours = _wilcoxon(x, y)["p"]
+    assert ours == pytest.approx(stats.wilcoxon(x, y, method="exact").pvalue)
+
+
+def test_exact_wilcoxon_with_ties_by_enumeration():
+    from itertools import product
+    from scipy import stats
+
+    x, y = [1, 1, 1, 0.5, 1, 0], [0, 0, 0.5, 0, 0, 0]
+    diffs = [a - b for a, b in zip(x, y) if a != b]
+    ranks = stats.rankdata([abs(d) for d in diffs])
+    w_obs = sum(r for r, d in zip(ranks, diffs) if d > 0)
+    centre = sum(ranks) / 2
+    sums = [sum(r for r, s in zip(ranks, signs) if s) for signs in product([0, 1], repeat=len(ranks))]
+    expected = sum(abs(w - centre) >= abs(w_obs - centre) - 1e-9 for w in sums) / len(sums)
+    assert _wilcoxon(x, y)["p"] == pytest.approx(expected)
+
+
 def test_wilcoxon_handles_identical_samples_and_direction():
-    assert _wilcoxon([0.2, 0.4], [0.2, 0.4]) == {"statistic": None, "p": 1.0, "n_nonzero": 0, "rank_biserial": 0.0}
+    assert _wilcoxon([0.2, 0.4], [0.2, 0.4])["p"] == 1.0
     res = _wilcoxon([1, 1, 1, 1, 1, 0.8], [0, 0.2, 0, 0, 0.4, 0.8])
     assert res["n_nonzero"] == 5 and res["rank_biserial"] == 1.0
 

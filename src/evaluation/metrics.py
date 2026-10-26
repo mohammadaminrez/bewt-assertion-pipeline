@@ -104,19 +104,42 @@ def _aligned(rates: dict[str, dict[tuple, float]], treatments: list[str]) -> lis
     return sorted(common)
 
 
+def _exact_signed_rank_p(ranks: list[float], positive_sum: float) -> float:
+    """Exact two-sided p-value of the Wilcoxon signed-rank statistic.
+
+    Under H0 each nonzero difference is equally likely positive or negative,
+    so W+ is the sum of a uniformly random subset of the ranks. The null
+    distribution is built exactly (ties give half-integer ranks, hence the
+    doubling to integers), which stays valid for the small numbers of
+    nonzero differences typical here, where the normal approximation is not.
+    """
+    doubled = [int(round(2 * r)) for r in ranks]
+    counts = {0: 1}
+    for r in doubled:
+        nxt = dict(counts)
+        for total, c in counts.items():
+            nxt[total + r] = nxt.get(total + r, 0) + c
+        counts = nxt
+    combos = 2 ** len(doubled)
+    centre = sum(doubled) / 2
+    observed = abs(2 * positive_sum - centre)
+    extreme = sum(c for total, c in counts.items() if abs(total - centre) >= observed - 1e-9)
+    return min(1.0, extreme / combos)
+
+
 def _wilcoxon(x: list[float], y: list[float]) -> dict:
     from scipy import stats
 
     diffs = [a - b for a, b in zip(x, y) if a != b]
     if not diffs:
         return {"statistic": None, "p": 1.0, "n_nonzero": 0, "rank_biserial": 0.0}
-    res = stats.wilcoxon(x, y, zero_method="wilcox")
-    ranks = stats.rankdata([abs(d) for d in diffs])
+    ranks = [float(r) for r in stats.rankdata([abs(d) for d in diffs])]
     positive = sum(rank for rank, d in zip(ranks, diffs) if d > 0)
     negative = sum(rank for rank, d in zip(ranks, diffs) if d < 0)
     return {
-        "statistic": float(res.statistic),
-        "p": float(res.pvalue),
+        "statistic": min(positive, negative),
+        "p": _exact_signed_rank_p(ranks, positive),
+        "p_method": "exact",
         "n_nonzero": len(diffs),
         # matched-pairs rank-biserial correlation, in [-1, 1]; >0 means x > y
         "rank_biserial": (positive - negative) / (positive + negative),
