@@ -56,46 +56,43 @@ def fake_llm(monkeypatch):
 
 
 def test_run_crawled_experiment_stores_results_with_crawled_source(config, fake_llm):
-    results = run_crawled_experiment(
-        config, "bludit", models=["fake-model"], treatments=("A", "B", "C"),
-    )
+    results = run_crawled_experiment(config, "bludit", models=["fake-model"])
 
-    # 2 tests x 3 treatments
-    assert len(results) == 6
+    # 2 tests, one condition each
+    assert len(results) == 2
     assert all(r.source == "crawled" for r in results)
     assert all(r.generated_assertion for r in results)
     assert all(r.notes.startswith("execution skipped") for r in results)
 
     store = ResultStore(config.output_dir / "results.db")
     rows = store.get_all_results()
-    assert len(rows) == 6
+    assert len(rows) == 2
     assert all(row["source"] == "crawled" for row in rows)
     calls = store.get_llm_calls(source="crawled")
-    assert len(calls) == 6
+    assert len(calls) == 2
     assert all(call["experiment_id"] is not None for call in calls)
     store.close()
 
 
-def test_crawled_treatments_control_prompt_context(config, fake_llm):
-    run_crawled_experiment(
-        config, "bludit", models=["fake-model"], treatments=("A", "B", "C"), limit=1,
-    )
+def test_crawled_prompt_has_trace_and_captured_page(config, fake_llm):
+    run_crawled_experiment(config, "bludit", models=["fake-model"], limit=1)
 
-    prompts = [user for _, user in fake_llm.calls]
-    prompt_a, prompt_b, prompt_c = prompts
+    [(_, prompt)] = fake_llm.calls
+    assert "// The test" in prompt
+    # the page captured at the assertion point, unchanged
+    assert "```html\n<html>captured CrawledBluditTest0</html>\n```" in prompt
 
-    assert "// The test" not in prompt_a and "```html" not in prompt_a
-    assert "// The test" in prompt_b and "```html" not in prompt_b
-    assert "// The test" in prompt_c and "```html" in prompt_c
-    # Treatment C carries the page captured at the assertion point, unchanged.
-    assert "```html\n<html>captured CrawledBluditTest0</html>\n```" in prompt_c
+
+def test_run_crawled_experiment_needs_captured_pages(config, fake_llm):
+    (config.output_dir / "reference-crawled" / "bludit" / "html" / "CrawledBluditTest1.html").unlink()
+    with pytest.raises(runner_module.MissingContextError, match="CrawledBluditTest1"):
+        run_crawled_experiment(config, "bludit", models=["fake-model"])
+    assert fake_llm.calls == []
 
 
 def test_run_crawled_experiment_is_resumable(config, fake_llm):
-    first = run_crawled_experiment(config, "bludit", models=["fake-model"],
-                                   treatments=("A",))
+    first = run_crawled_experiment(config, "bludit", models=["fake-model"])
     assert len(first) == 2
-    again = run_crawled_experiment(config, "bludit", models=["fake-model"],
-                                   treatments=("A",))
+    again = run_crawled_experiment(config, "bludit", models=["fake-model"])
     assert len(again) == 0  # everything already stored → skipped
     assert len(fake_llm.calls) == 2

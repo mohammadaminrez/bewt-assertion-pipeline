@@ -168,7 +168,7 @@ def pre_classify_crawled_results(
                     r, classifier_model or response.model, user_msg, response
                 ))
             if on_progress:
-                on_progress(i + 1, total, f"{r.test_record.class_name} [{r.treatment}]: {parsed}")
+                on_progress(i + 1, total, f"{r.test_record.class_name}: {parsed}")
         except Exception as e:
             classifications[key] = ""
             if store:

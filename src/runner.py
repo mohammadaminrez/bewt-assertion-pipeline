@@ -416,7 +416,6 @@ def run_crawled_experiment(
     config: Config,
     app: str,
     models: list[str] | None = None,
-    treatments: tuple[str, ...] = ("A", "B", "C"),
     execute: bool = False,
     on_progress: ProgressCallback | None = None,
     limit: int | None = None,
@@ -427,9 +426,9 @@ def run_crawled_experiment(
     Differences from :func:`run_experiment`:
     - tests come from the ingested DANTE suite (``ingest-crawl``), have no gold
       standard, and therefore no exact-match / similarity metrics;
-    - context sources are the action trace rendered from the test's own
-      statements (treatment B) and the page captured at the assertion point by
-      the crawled reference run (treatment C) — no Gherkin / Page Objects;
+    - there are no treatments: every prompt holds the test code, the action
+      trace rendered from its own statements and the page captured at the
+      assertion point by the crawled reference run;
     - with ``execute``, each answer runs alone (DANTE's JDK 8 toolchain) on the
       app state saved just before its test in the crawled reference run;
       categories come from execution (not_executable / wrong_assertion), and
@@ -440,10 +439,7 @@ def run_crawled_experiment(
         ingest_dante_suite,
         to_test_records,
     )
-    from .llm.prompt_builder import (
-        build_crawled_assertion_prompt,
-        crawled_treatment_ingredients,
-    )
+    from .llm.prompt_builder import CRAWLED_TREATMENT, build_crawled_assertion_prompt
 
     models = models or [config.default_model]
     app_config = config.apps.get(app, {})
@@ -464,17 +460,16 @@ def run_crawled_experiment(
         records = records[:limit]
 
     html_dir = reference_dir(config, app, "crawled") / "html"
-    html_treatments = [t for t in treatments if crawled_treatment_ingredients(t).html]
     missing = [r.class_name for r in records if not (html_dir / f"{r.class_name}.html").exists()]
-    if (html_treatments or execute) and missing:
+    if missing:
         raise MissingContextError(
-            f"Treatment(s) {', '.join(html_treatments) or '(execution)'} need the crawled "
-            f"reference run, but {len(missing)} test(s) have no captured page:\n  "
-            + "\n  ".join(missing)
+            f"Crawled prompts need the page captured by the crawled reference run, "
+            f"but {len(missing)} test(s) have none:\n  " + "\n  ".join(missing)
             + f"\nRun 'bewt-pipeline reference-run --app {app} --source crawled' first."
         )
 
-    total = len(records) * len(treatments) * len(models) * runs
+    t = CRAWLED_TREATMENT
+    total = len(records) * len(models) * runs
     store = ResultStore(config.output_dir / "results.db")
     all_results: list[ExperimentResult] = []
     completed = 0
@@ -488,109 +483,95 @@ def run_crawled_experiment(
         llm = create_client(config, model_name, run=run)
 
         for record in records:
-            crawled_test = by_class[record.class_name]
+            completed += 1
 
-            for t in treatments:
-                completed += 1
+            if store.has_result(app, version, record.class_name, t,
+                                model_name, source="crawled", run=run):
+                _progress(t, record.class_name, "skipped")
+                continue
 
-                if store.has_result(app, version, record.class_name, t,
-                                    model_name, source="crawled", run=run):
-                    _progress(t, record.class_name, "skipped")
-                    continue
+            variant_source = crawled_variant_source(record, by_class[record.class_name].trace_comment)
+            system, user = build_crawled_assertion_prompt(
+                record,
+                variant_source=variant_source,
+                html_content=(html_dir / f"{record.class_name}.html").read_text(),
+            )
 
-                ingredients = crawled_treatment_ingredients(t)
-
-                variant_source = crawled_variant_source(
-                    record, crawled_test.trace_comment if ingredients.comments else None
-                )
-
-                html = None
-                if ingredients.html:
-                    # Captured by the reference run; presence checked above.
-                    html = (html_dir / f"{record.class_name}.html").read_text()
-
-                system, user = build_crawled_assertion_prompt(
-                    record,
-                    variant_source=variant_source,
-                    include_comments=ingredients.comments,
-                    html_content=html,
-                )
-
-                llm_response = None
-                try:
-                    llm_response = llm.generate(system, user)
-                    raw_response = llm_response.text
-                except Exception as e:
-                    error_response = LLMResponse(text=str(e), provider="", model=model_name)
-                    result = ExperimentResult(
-                        test_record=record, treatment=t, model=model_name,
-                        source="crawled", run=run,
-                        prompt=user, raw_response=str(e), generated_assertion="",
-                        error_category=ErrorCategory.NOT_EXECUTABLE,
-                        notes=f"LLM error: {e}",
-                    )
-                    experiment_id = store.save_result(result)
-                    _save_and_emit_llm_call(store, _build_generation_call(
-                        record, t, model_name, system, user, error_response,
-                        experiment_id, source="crawled", run=run,
-                    ))
-                    all_results.append(result)
-                    _progress(t, record.class_name, f"error:{e}")
-                    continue
-
-                generated = extract_assertion_from_response(raw_response)
-                valid = validate_assertion(generated)
-
+            llm_response = None
+            try:
+                llm_response = llm.generate(system, user)
+                raw_response = llm_response.text
+            except Exception as e:
+                error_response = LLMResponse(text=str(e), provider="", model=model_name)
                 result = ExperimentResult(
                     test_record=record, treatment=t, model=model_name,
                     source="crawled", run=run,
-                    prompt=user, raw_response=raw_response,
-                    generated_assertion=generated,
+                    prompt=user, raw_response=str(e), generated_assertion="",
+                    error_category=ErrorCategory.NOT_EXECUTABLE,
+                    notes=f"LLM error: {e}",
                 )
-
-                notes = []
-                if valid and has_extra_statements(generated):
-                    notes.append("answer contains non-assertion statements")
-                if not valid:
-                    result.error_category = ErrorCategory.NOT_EXECUTABLE
-                    notes.append("answer contains no assertion call")
-                    _progress(t, record.class_name, "invalid")
-                elif not execute:
-                    notes.append("execution skipped")
-                    _progress(t, record.class_name, "generated")
-                else:
-                    filled, fill_note = fill_placeholders(variant_source, generated)
-                    if fill_note:
-                        notes.append(fill_note)
-                    work_dir = config.output_dir / "runs-crawled" / app / model_name / t / record.class_name
-                    compile_res, test_res = run_isolated(
-                        config, app, record.class_name, filled, work_dir, source="crawled",
-                    )
-                    result.compiles = compile_res.success
-                    error_type = ""
-                    if test_res is not None:
-                        result.passes = test_res.passed
-                        error_type = test_res.error_type
-                        result.failure_type = "" if test_res.passed else error_type
-                        if test_res.error_message:
-                            notes.append(test_res.error_message[:500])
-                    else:
-                        notes.append("; ".join(compile_res.errors[:3]))
-                    # No gold: an assertion that holds awaits the meaningfulness
-                    # review (needs_review); failures are decided by execution.
-                    result.error_category = classify_outcome(
-                        generated, [], result.compiles, result.passes, error_type,
-                    )
-                    status = "PASS" if result.passes else "FAIL"
-                    _progress(t, record.class_name, f"{status}:cat={result.error_category.value}")
-                result.notes = " | ".join(notes)
-
                 experiment_id = store.save_result(result)
                 _save_and_emit_llm_call(store, _build_generation_call(
-                    record, t, model_name, system, user, llm_response,
+                    record, t, model_name, system, user, error_response,
                     experiment_id, source="crawled", run=run,
                 ))
                 all_results.append(result)
+                _progress(t, record.class_name, f"error:{e}")
+                continue
+
+            generated = extract_assertion_from_response(raw_response)
+            valid = validate_assertion(generated)
+
+            result = ExperimentResult(
+                test_record=record, treatment=t, model=model_name,
+                source="crawled", run=run,
+                prompt=user, raw_response=raw_response,
+                generated_assertion=generated,
+            )
+
+            notes = []
+            if valid and has_extra_statements(generated):
+                notes.append("answer contains non-assertion statements")
+            if not valid:
+                result.error_category = ErrorCategory.NOT_EXECUTABLE
+                notes.append("answer contains no assertion call")
+                _progress(t, record.class_name, "invalid")
+            elif not execute:
+                notes.append("execution skipped")
+                _progress(t, record.class_name, "generated")
+            else:
+                filled, fill_note = fill_placeholders(variant_source, generated)
+                if fill_note:
+                    notes.append(fill_note)
+                work_dir = config.output_dir / "runs-crawled" / app / model_name / t / record.class_name
+                compile_res, test_res = run_isolated(
+                    config, app, record.class_name, filled, work_dir, source="crawled",
+                )
+                result.compiles = compile_res.success
+                error_type = ""
+                if test_res is not None:
+                    result.passes = test_res.passed
+                    error_type = test_res.error_type
+                    result.failure_type = "" if test_res.passed else error_type
+                    if test_res.error_message:
+                        notes.append(test_res.error_message[:500])
+                else:
+                    notes.append("; ".join(compile_res.errors[:3]))
+                # No gold: an assertion that holds awaits the meaningfulness
+                # review (needs_review); failures are decided by execution.
+                result.error_category = classify_outcome(
+                    generated, [], result.compiles, result.passes, error_type,
+                )
+                status = "PASS" if result.passes else "FAIL"
+                _progress(t, record.class_name, f"{status}:cat={result.error_category.value}")
+            result.notes = " | ".join(notes)
+
+            experiment_id = store.save_result(result)
+            _save_and_emit_llm_call(store, _build_generation_call(
+                record, t, model_name, system, user, llm_response,
+                experiment_id, source="crawled", run=run,
+            ))
+            all_results.append(result)
 
     store.close()
     flush_observability()

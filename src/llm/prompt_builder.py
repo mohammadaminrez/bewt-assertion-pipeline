@@ -41,27 +41,12 @@ def treatment_ingredients(treatment: str) -> Ingredients:
     return _INGREDIENTS[treatment]
 
 
-# Crawled (DANTE/Crawljax) tests reuse the same ingredient booleans, but the
-# `project` source does not exist for them: A=code, B=+action-trace comment,
-# C=+state DOM. D is meaningless and therefore not offered.
-_CRAWLED_INGREDIENTS = {
-    "A": Ingredients(comments=False, html=False, project=False),
-    "B": Ingredients(comments=True, html=False, project=False),
-    "C": Ingredients(comments=True, html=True, project=False),
-}
-
-CRAWLED_TREATMENTS = tuple(_CRAWLED_INGREDIENTS.keys())
-
-
-def crawled_treatment_ingredients(treatment: str) -> Ingredients:
-    """Context sources a treatment includes for crawler-generated tests."""
-    treatment = treatment.upper()
-    if treatment not in _CRAWLED_INGREDIENTS:
-        raise ValueError(
-            f"Treatment {treatment} is not valid for crawled tests "
-            f"(valid: {', '.join(CRAWLED_TREATMENTS)})"
-        )
-    return _CRAWLED_INGREDIENTS[treatment]
+# Crawled (DANTE/Crawljax) tests have no treatments: the prompt always holds
+# the test code, its action-trace comment and the page at the assertion
+# point. Answers are stored under this label, which that context had when
+# the crawled tests were also run without the page (A/B), so the results
+# collected then keep their keys.
+CRAWLED_TREATMENT = "C"
 
 
 SYSTEM_PROMPT = """You are an expert Java/Selenium test engineer. You are given a JUnit/Selenium test method where the assertion(s) have been removed and replaced with a TODO placeholder.
@@ -95,33 +80,23 @@ def build_crawled_assertion_prompt(
     record: TestRecord,
     *,
     variant_source: str,
-    include_comments: bool,
-    html_content: str | None = None,
+    html_content: str,
 ) -> tuple[str, str]:
     """Assemble the prompt for a crawler-generated (assertion-less) test.
 
     Mirrors ``build_assertion_prompt`` but with the crawled-test system prompt
-    and wording: comments here are an auto-generated action trace, and the HTML
+    and wording: the comment is the auto-generated action trace, and the HTML
     is the page source captured at the assertion point by the reference run.
     """
-    intro = [
+    user = (
         "Write the missing assertion(s) for the following crawler-generated "
-        "Selenium test where the TODO comment is."
-    ]
-    if include_comments:
-        intro.append(
-            "A comment above the placeholder describes the actions the test "
-            "performs and the state it reaches."
-        )
-
-    user = "\n".join(intro) + f"\n\nTest code:\n```java\n{variant_source}\n```"
-
-    if html_content:
-        user += (
-            "\n\nHTML page content at the assertion point:\n"
-            f"```html\n{html_content}\n```"
-        )
-
+        "Selenium test where the TODO comment is.\n"
+        "A comment above the placeholder describes the actions the test "
+        "performs and the state it reaches."
+        f"\n\nTest code:\n```java\n{variant_source}\n```"
+        "\n\nHTML page content at the assertion point:\n"
+        f"```html\n{html_content}\n```"
+    )
     return CRAWLED_SYSTEM_PROMPT, user
 
 

@@ -32,7 +32,7 @@ from .evaluation.prompt_export import export_llm_calls
 from .evaluation.usage_report import export_treatment_comparison
 from .data.store import ResultStore
 from .runner import MissingContextError, run_experiment, run_crawled_experiment, count_experiments
-from .llm.prompt_builder import TREATMENTS, CRAWLED_TREATMENTS
+from .llm.prompt_builder import TREATMENTS, CRAWLED_TREATMENT
 
 
 def _validate_bewt_repo(config: Config) -> None:
@@ -268,7 +268,7 @@ def verify_execution(ctx, app, source):
               help="Repetitions: each test/treatment is generated this many times (independent LLM calls)")
 @click.option("--source", type=click.Choice(["bewt", "crawled"]), default="bewt",
               help="Test provenance: bewt (benchmark tests with gold assertions) or "
-                   "crawled (DANTE/Crawljax-generated tests; treatments A/B/C only)")
+                   "crawled (DANTE/Crawljax-generated tests; no treatments)")
 @click.pass_context
 def run(ctx, app, model, treatment, execute, limit, runs, source):
     """Run the full experiment pipeline."""
@@ -282,15 +282,13 @@ def run(ctx, app, model, treatment, execute, limit, runs, source):
             )
         if len(app) > 1:
             raise click.ClickException("--source crawled supports a single --app per run.")
-        treatments = tuple(treatment) if treatment else CRAWLED_TREATMENTS
-        invalid = [t for t in treatments if t not in CRAWLED_TREATMENTS]
-        if invalid:
+        if treatment:
             raise click.ClickException(
-                f"Treatment(s) {', '.join(invalid)} not valid for crawled tests. "
-                f"Valid: {', '.join(CRAWLED_TREATMENTS)}."
+                "Crawled tests have no treatments: the prompt always holds the test code, "
+                "its action trace and the page at the assertion point. Drop --treatment."
             )
         _validate_api_keys(config, models)
-        _run_crawled(config, app[0], models, treatments, execute, limit, runs)
+        _run_crawled(config, app[0], models, execute, limit, runs)
         return
 
     _validate_bewt_repo(config)
@@ -347,7 +345,7 @@ def run(ctx, app, model, treatment, execute, limit, runs, source):
     store.close()
 
 
-def _run_crawled(config, app, models, treatments, execute, limit, runs=1):
+def _run_crawled(config, app, models, execute, limit, runs=1):
     """Drive run_crawled_experiment with CLI progress output."""
     suite_path = config.get_dante_suite_path(app)
     if not suite_path.exists():
@@ -356,25 +354,25 @@ def _run_crawled(config, app, models, treatments, execute, limit, runs=1):
             f"Run 'bewt-pipeline crawl --app {app}' first (see docs/dante-setup.md)."
         )
 
-    def on_progress(completed, total_exp, t, class_name, message):
+    def on_progress(completed, total_exp, _treatment, class_name, message):
         progress = f"[{completed}/{total_exp}]"
         if message.startswith("model:"):
             click.echo(f"\n{'='*60}\nModel: {message[6:]} (crawled: {app})\n{'='*60}")
         elif message == "skipped":
-            click.echo(f"  {progress} [{t}] {class_name}: already done, skipping")
+            click.echo(f"  {progress} {class_name}: already done, skipping")
         elif message == "invalid":
-            click.echo(f"  {progress} [{t}] {class_name}: " + click.style("invalid assertion", fg="red"))
+            click.echo(f"  {progress} {class_name}: " + click.style("invalid assertion", fg="red"))
         elif message == "generated":
-            click.echo(f"  {progress} [{t}] {class_name}: " + click.style("assertion generated", fg="green"))
+            click.echo(f"  {progress} {class_name}: " + click.style("assertion generated", fg="green"))
         elif message.startswith("error:"):
-            click.echo(f"  {progress} [{t}] {class_name}: " + click.style(f"LLM error: {message[6:]}", fg="red"))
+            click.echo(f"  {progress} {class_name}: " + click.style(f"LLM error: {message[6:]}", fg="red"))
         elif message.startswith("PASS:") or message.startswith("FAIL:"):
             color = "green" if message.startswith("PASS") else "red"
-            click.echo(f"  {progress} [{t}] {class_name}: " + click.style(message, fg=color))
+            click.echo(f"  {progress} {class_name}: " + click.style(message, fg=color))
 
     try:
         results = run_crawled_experiment(
-            config, app, models=models, treatments=treatments,
+            config, app, models=models,
             execute=execute, on_progress=on_progress, limit=limit, runs=runs,
         )
     except MissingContextError as e:
@@ -510,6 +508,13 @@ def _load_crawled_state_maps(config, apps: set[str]) -> dict[str, dict]:
     return merged
 
 
+def _is_crawled_answer(result) -> bool:
+    """A crawled answer from the single crawled condition. Rows from the earlier
+    runs without the page (treatments A/B) stay in the database but are not
+    reported or reviewed."""
+    return result.source == "crawled" and result.treatment == CRAWLED_TREATMENT
+
+
 def _load_oracle_results(config, apps: set[str]) -> dict[str, str]:
     merged: dict[str, str] = {}
     for app in apps:
@@ -539,7 +544,7 @@ def report(ctx):
         raise click.ClickException("No results found in database. Run the experiment first.")
 
     bewt_results = [r for r in all_results if r.source == "bewt"]
-    crawled_results = [r for r in all_results if r.source == "crawled"]
+    crawled_results = [r for r in all_results if _is_crawled_answer(r)]
     click.echo(f"Found {len(bewt_results)} benchmark results, {len(crawled_results)} crawled results")
 
     if bewt_results:
@@ -803,7 +808,8 @@ def export_excel(ctx, output, pre_classify, model, source):
         raise click.ClickException("No results database found. Run the experiment first.")
 
     store = ResultStore(db_path)
-    results = [r for r in store.load_experiment_results() if r.source == source]
+    results = [r for r in store.load_experiment_results()
+               if (_is_crawled_answer(r) if source == "crawled" else r.source == "bewt")]
     if not results:
         raise click.ClickException(f"No {source} results found in database.")
 

@@ -10,6 +10,7 @@ from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
+from ..llm.prompt_builder import CRAWLED_TREATMENT
 from ..models import ErrorCategory, ExperimentResult
 
 CLASSIFICATION_OPTIONS = "correct,over_assertive,under_assertive,wrong_assertion,not_executable"
@@ -143,7 +144,7 @@ def export_crawled_results_to_excel(
 ) -> None:
     """Export crawled-test results for manual meaningfulness annotation.
 
-    One row per (test, treatment, model), with the LLM assertion side by side
+    One row per (test, model), with the LLM assertion side by side
     with a description of the Crawljax oracle for the same point, so the
     annotator judges expressiveness relative to that baseline.
 
@@ -167,7 +168,6 @@ def export_crawled_results_to_excel(
             "App": r.test_record.app,
             "Test Class": r.test_record.class_name,
             "Method": r.test_record.method_name,
-            "Treatment": r.treatment,
             "Model": r.model,
             "Action Trace": trace,
             "Crawljax Oracle (baseline)": (
@@ -184,7 +184,7 @@ def export_crawled_results_to_excel(
         })
 
     df = pd.DataFrame(rows)
-    df.sort_values(by=["App", "Test Class", "Treatment", "Model"], inplace=True)
+    df.sort_values(by=["App", "Test Class", "Model"], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -196,7 +196,7 @@ def export_crawled_results_to_excel(
         ws, len(df),
         classification_options=CRAWLED_CLASSIFICATION_OPTIONS,
         col_widths={
-            "App": 12, "Test Class": 24, "Method": 12, "Treatment": 10,
+            "App": 12, "Test Class": 24, "Method": 12,
             "Model": 15, "Action Trace": 60, "Crawljax Oracle (baseline)": 40,
             "LLM Assertion": 55, "Compiles": 10, "Pass/Fail": 10,
             "Fail Reason": 35, "LLM Pre-Classification": 20,
@@ -313,7 +313,8 @@ def import_classifications_from_excel(
         annotations.append({
             "app": row["App"],
             "class_name": row["Test Class"],
-            "treatment": row["Treatment"],
+            # crawled sheets have no Treatment column (one condition)
+            "treatment": row.get("Treatment", CRAWLED_TREATMENT),
             "model": row["Model"],
             "manual_classification": str(manual_class).strip(),
             "manual_notes": str(row.get("Manual Notes", "") or ""),

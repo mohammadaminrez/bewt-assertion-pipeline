@@ -45,16 +45,18 @@ Crawljax explores app  →  state-flow graph  →  Selenium tests (no assertions
    order, on a container installed exactly as for the crawl (DANTE's
    `run-docker.sh`); every replay must pass on its own. After each test the
    app state is saved and the page at the assertion point is captured —
-   that page is the treatment-C context.
+   that page goes into every crawled prompt.
 5. **Controls** (`bewt-pipeline verify-execution --source crawled`) — no gold
    exists, so the known-true assertion is the captured page title:
    `assertEquals(<title>, driver.getTitle())` must pass and its negation fail
    for every test, run through the same isolated path as the LLM answers.
 6. **Generate assertions** (`bewt-pipeline run --source crawled --execute`) —
-   for each test × treatment the LLM writes the missing assertion:
-   - **A** — test code only
-   - **B** — + the action-trace comment
-   - **C** — + B and the page captured at the assertion point
+   for each test the LLM writes the missing assertion. There are no
+   treatments: the prompt always holds the test code, the action-trace
+   comment and the page captured at the assertion point. (Early runs
+   without the page — test code alone, or with the trace — held on 0/30
+   tests; those rows stay in the database under treatments A/B but are not
+   reported. The single condition is stored as treatment `C`.)
 
    Each answer runs alone (DANTE's JDK 8 toolchain) on the app state saved
    just before its test. Results land in `output/results.db` with
@@ -100,7 +102,7 @@ bewt-pipeline report                                   # → reports/crawled_com
 ```
 
 Useful along the way: `bewt-pipeline llm-usage --by source` (token/cost split),
-`bewt-pipeline show-prompt --app bludit --treatment C --latest` (exact prompt sent).
+`bewt-pipeline show-prompt --app bludit --latest` (exact prompt sent).
 
 Practical notes:
 
