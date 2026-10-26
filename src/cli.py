@@ -276,8 +276,6 @@ def run(ctx, app, model, treatment, execute, limit, runs, source):
     models = list(model) if model else [config.default_model]
 
     if source == "crawled":
-        if runs > 1:
-            raise click.ClickException("--runs is only supported for --source bewt.")
         if not app:
             raise click.ClickException(
                 "--source crawled requires an explicit --app (one crawled app per run)."
@@ -292,7 +290,7 @@ def run(ctx, app, model, treatment, execute, limit, runs, source):
                 f"Valid: {', '.join(CRAWLED_TREATMENTS)}."
             )
         _validate_api_keys(config, models)
-        _run_crawled(config, app[0], models, treatments, execute, limit)
+        _run_crawled(config, app[0], models, treatments, execute, limit, runs)
         return
 
     _validate_bewt_repo(config)
@@ -349,7 +347,7 @@ def run(ctx, app, model, treatment, execute, limit, runs, source):
     store.close()
 
 
-def _run_crawled(config, app, models, treatments, execute, limit):
+def _run_crawled(config, app, models, treatments, execute, limit, runs=1):
     """Drive run_crawled_experiment with CLI progress output."""
     suite_path = config.get_dante_suite_path(app)
     if not suite_path.exists():
@@ -377,7 +375,7 @@ def _run_crawled(config, app, models, treatments, execute, limit):
     try:
         results = run_crawled_experiment(
             config, app, models=models, treatments=treatments,
-            execute=execute, on_progress=on_progress, limit=limit,
+            execute=execute, on_progress=on_progress, limit=limit, runs=runs,
         )
     except MissingContextError as e:
         raise click.ClickException(str(e))

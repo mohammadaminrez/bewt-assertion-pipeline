@@ -62,14 +62,11 @@ def test_prompt_includes_all_sources_for_full_condition():
     assert "EditProjectPage.java" in user
 
 
-def test_prompt_html_is_cleaned_and_never_cut():
-    body = "<p>row</p>" * 2000 + '<td id="last">Category001</td>'
-    page = ("<html><head><style>.x{color:red}</style><script>var a=1;</script></head>"
-            f"<body onload=\"go()\" style=\"margin:0\">{body}<!-- note --></body></html>")
+def test_prompt_contains_the_whole_page_unchanged():
+    body = "<p>row</p>" * 5000 + '<td id="last">Category001</td>'
+    page = ("<html><head><title>Categories - Bludit</title><style>.x{color:red}</style></head>"
+            f'<body><div id="alert" style="display: none;"></div>{body}<!-- note --></body></html>')
     _, user = build_assertion_prompt(
         _record(), variant_source="// TODO", include_comments=False, html_content=page,
     )
-    assert '<td id="last">' in user and "Category001" in user
-    assert "truncated" not in user
-    for noise in ("<style", "<script", "var a=1", "onload", "margin:0", "<!--"):
-        assert noise not in user
+    assert f"```html\n{page}\n```" in user  # character for character, nothing cut or cleaned

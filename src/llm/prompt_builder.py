@@ -11,7 +11,6 @@ from dataclasses import dataclass
 
 from ..models import TestRecord
 from ..parsing.java_parser import PLACEHOLDER
-from ..variants.html_clean import clean_html
 
 
 @dataclass(frozen=True)
@@ -103,7 +102,7 @@ def build_crawled_assertion_prompt(
 
     Mirrors ``build_assertion_prompt`` but with the crawled-test system prompt
     and wording: comments here are an auto-generated action trace, and the HTML
-    is the DOM of the state the crawler observed at the end of the path.
+    is the page source captured at the assertion point by the reference run.
     """
     intro = [
         "Write the missing assertion(s) for the following crawler-generated "
@@ -119,8 +118,8 @@ def build_crawled_assertion_prompt(
 
     if html_content:
         user += (
-            "\n\nHTML page content at the assertion point (captured during "
-            f"crawling):\n```html\n{clean_html(html_content)}\n```"
+            "\n\nHTML page content at the assertion point:\n"
+            f"```html\n{html_content}\n```"
         )
 
     return CRAWLED_SYSTEM_PROMPT, user
@@ -161,11 +160,12 @@ def build_assertion_prompt(
     user = "\n".join(intro) + f"\n\nTest code:\n```java\n{variant_source}\n```"
 
     if html_content:
-        # The whole page, cleaned (see variants/html_clean.py) — never cut, so
-        # content far down a large page stays visible to the model.
+        # The whole page source as the browser returned it at the assertion
+        # point — never cut or cleaned, so nothing on the page (hidden
+        # elements, the title) is lost.
         user += (
             "\n\nHTML page content at the assertion point:\n"
-            f"```html\n{clean_html(html_content)}\n```"
+            f"```html\n{html_content}\n```"
         )
 
     if strings_source:

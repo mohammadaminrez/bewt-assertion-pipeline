@@ -51,7 +51,7 @@ def config(tmp_path):
 @pytest.fixture
 def fake_llm(monkeypatch):
     llm = FakeLLM()
-    monkeypatch.setattr(runner_module, "create_client", lambda config, model: llm)
+    monkeypatch.setattr(runner_module, "create_client", lambda config, model, run=1: llm)
     return llm
 
 
@@ -87,8 +87,8 @@ def test_crawled_treatments_control_prompt_context(config, fake_llm):
     assert "// The test" not in prompt_a and "```html" not in prompt_a
     assert "// The test" in prompt_b and "```html" not in prompt_b
     assert "// The test" in prompt_c and "```html" in prompt_c
-    # Treatment C carries the page captured at the assertion point (cleaned).
-    assert "<html>\ncaptured CrawledBluditTest0\n</html>" in prompt_c
+    # Treatment C carries the page captured at the assertion point, unchanged.
+    assert "```html\n<html>captured CrawledBluditTest0</html>\n```" in prompt_c
 
 
 def test_run_crawled_experiment_is_resumable(config, fake_llm):

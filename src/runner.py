@@ -420,6 +420,7 @@ def run_crawled_experiment(
     execute: bool = False,
     on_progress: ProgressCallback | None = None,
     limit: int | None = None,
+    runs: int = 1,
 ) -> list[ExperimentResult]:
     """Run the assertion-generation pipeline on crawler-generated (DANTE) tests.
 
@@ -473,7 +474,7 @@ def run_crawled_experiment(
             + f"\nRun 'bewt-pipeline reference-run --app {app} --source crawled' first."
         )
 
-    total = len(records) * len(treatments) * len(models)
+    total = len(records) * len(treatments) * len(models) * runs
     store = ResultStore(config.output_dir / "results.db")
     all_results: list[ExperimentResult] = []
     completed = 0
@@ -482,9 +483,9 @@ def run_crawled_experiment(
         if on_progress:
             on_progress(completed, total, treatment, class_name, message)
 
-    for model_name in models:
-        _progress("", "", f"model:{model_name}")
-        llm = create_client(config, model_name)
+    for model_name, run in [(m, r) for m in models for r in range(1, runs + 1)]:
+        _progress("", "", f"model:{model_name}" + (f" (run {run}/{runs})" if runs > 1 else ""))
+        llm = create_client(config, model_name, run=run)
 
         for record in records:
             crawled_test = by_class[record.class_name]
@@ -493,7 +494,7 @@ def run_crawled_experiment(
                 completed += 1
 
                 if store.has_result(app, version, record.class_name, t,
-                                    model_name, source="crawled"):
+                                    model_name, source="crawled", run=run):
                     _progress(t, record.class_name, "skipped")
                     continue
 
@@ -523,7 +524,7 @@ def run_crawled_experiment(
                     error_response = LLMResponse(text=str(e), provider="", model=model_name)
                     result = ExperimentResult(
                         test_record=record, treatment=t, model=model_name,
-                        source="crawled",
+                        source="crawled", run=run,
                         prompt=user, raw_response=str(e), generated_assertion="",
                         error_category=ErrorCategory.NOT_EXECUTABLE,
                         notes=f"LLM error: {e}",
@@ -531,7 +532,7 @@ def run_crawled_experiment(
                     experiment_id = store.save_result(result)
                     _save_and_emit_llm_call(store, _build_generation_call(
                         record, t, model_name, system, user, error_response,
-                        experiment_id, source="crawled",
+                        experiment_id, source="crawled", run=run,
                     ))
                     all_results.append(result)
                     _progress(t, record.class_name, f"error:{e}")
@@ -542,7 +543,7 @@ def run_crawled_experiment(
 
                 result = ExperimentResult(
                     test_record=record, treatment=t, model=model_name,
-                    source="crawled",
+                    source="crawled", run=run,
                     prompt=user, raw_response=raw_response,
                     generated_assertion=generated,
                 )
@@ -587,7 +588,7 @@ def run_crawled_experiment(
                 experiment_id = store.save_result(result)
                 _save_and_emit_llm_call(store, _build_generation_call(
                     record, t, model_name, system, user, llm_response,
-                    experiment_id, source="crawled",
+                    experiment_id, source="crawled", run=run,
                 ))
                 all_results.append(result)
 
