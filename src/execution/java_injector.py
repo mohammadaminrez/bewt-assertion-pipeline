@@ -6,7 +6,6 @@ import re
 import subprocess
 from pathlib import Path
 
-from ..models import TestRecord
 from ..parsing.java_parser import PLACEHOLDER
 
 _MARKER = re.compile(r"^\s*//\s*\((\d+)\)\s*$")
@@ -90,23 +89,6 @@ def ensure_assert_imports(source: str) -> str:
         anchor = next(i for i, line in enumerate(lines) if line.strip().startswith("package "))
     lines[anchor + 1:anchor + 1] = imports
     return "\n".join(lines)
-
-
-def inject_assertion(
-    record: TestRecord,
-    generated_assertion: str,
-    variant_source: str,
-    output_path: Path,
-) -> Path:
-    """Write a test file with the generated assertion replacing the placeholder(s).
-
-    Returns the path to the written file.
-    """
-    injected, _ = fill_placeholders(variant_source, generated_assertion)
-    injected = ensure_assert_imports(injected)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(injected)
-    return output_path
 
 
 def localize_base_url(project_path: Path, base_url: str) -> list[Path]:
