@@ -33,27 +33,37 @@ Crawljax explores app  →  state-flow graph  →  Selenium tests (no assertions
    That suite is the comparison baseline.
 3. **Ingest** (`bewt-pipeline ingest-crawl`) — `src/ingest/dante.py` splits the
    JUnit suite into one single-test class per path, inserts the pipeline's
-   standard `// TODO: Insert the missing assertion here` placeholder, walks
-   each path through the state-flow graph to find the state the test ends in
-   (its saved DOM = the "HTML at the assertion point"), and renders a
-   natural-language action trace. Output: `output/crawled/<app>/tests/` +
-   `state_map.json`.
-4. **Generate assertions** (`bewt-pipeline run --source crawled`) — for each
-   test × treatment the LLM is prompted to write the missing assertion:
+   standard `// TODO: Insert the missing assertion here` placeholder, and
+   renders a natural-language action trace from the test's own statements
+   (opens / types into / clicks). Output: `output/crawled/<app>/tests/` +
+   `state_map.json`. (An earlier version guessed each test's final page by
+   walking the crawl graph; on Bludit it mapped all 30 tests to the start
+   page, so that guess was removed.)
+4. **Crawled reference run** (`bewt-pipeline reference-run --source crawled`) —
+   the crawl ran its paths one after another without resetting app data, so
+   later tests depend on earlier ones. The 30 replays run once, in crawl
+   order, on a container installed exactly as for the crawl (DANTE's
+   `run-docker.sh`); every replay must pass on its own. After each test the
+   app state is saved and the page at the assertion point is captured —
+   that page is the treatment-C context.
+5. **Controls** (`bewt-pipeline verify-execution --source crawled`) — no gold
+   exists, so the known-true assertion is the captured page title:
+   `assertEquals(<title>, driver.getTitle())` must pass and its negation fail
+   for every test, run through the same isolated path as the LLM answers.
+6. **Generate assertions** (`bewt-pipeline run --source crawled --execute`) —
+   for each test × treatment the LLM writes the missing assertion:
    - **A** — test code only
    - **B** — + the action-trace comment
-   - **C** — + the crawled DOM of the reached state
+   - **C** — + B and the page captured at the assertion point
 
-   With `--execute`, the assertion is injected back into a copy of the
-   generated Maven project, compiled (pinned JDK 8), and run with JUnitCore
-   against a freshly reset app container. Everything (prompts, tokens, cost,
-   results) lands in `output/results.db` with `source='crawled'`, kept apart
-   from the BEWT benchmark rows.
-5. **Evaluate** — crawled tests have no gold standard, so each LLM assertion is
-   judged on a meaningfulness rubric (`semantic` / `structural` /
-   `wrong_assertion` / `not_executable`) against the Crawljax oracle suite as
-   baseline: LLM pre-classification first, human review in Excel, final
-   comparison table in `reports/crawled_comparison.csv`.
+   Each answer runs alone (DANTE's JDK 8 toolchain) on the app state saved
+   just before its test. Results land in `output/results.db` with
+   `source='crawled'`, kept apart from the BEWT benchmark rows.
+7. **Evaluate** — execution decides `not_executable` (compile or runtime
+   error) and `wrong_assertion` (assertion fails); an assertion that holds is
+   judged on a meaningfulness rubric (`semantic` / `structural`) against the
+   Crawljax oracle suite as baseline; comparison table in
+   `reports/crawled_comparison.csv`.
 
 ## Full run: all commands in order
 
@@ -78,9 +88,11 @@ open http://localhost:8765/graph.html
 # ── 3.–5. pipeline side ──
 cd ~/bewt-assertion-pipeline && source .venv/bin/activate
 
-bewt-pipeline ingest-crawl --app bludit                # split tests, placeholders, DOM map
+bewt-pipeline ingest-crawl --app bludit                # split tests, placeholders, action traces
+bewt-pipeline reference-run --app bludit --source crawled     # replay all in crawl order: snapshots + pages
+bewt-pipeline verify-execution --app bludit --source crawled  # controls: must be 30/30
 bewt-pipeline run --app bludit --source crawled \
-    --model gpt-4o-mini --execute                      # LLM assertions + live execution
+    --model gpt-4o-mini --execute                      # LLM assertions + isolated execution
 bewt-pipeline run-oracle-suite --app bludit            # Crawljax oracle baseline
 bewt-pipeline export-excel --source crawled --pre-classify   # judge + Excel for manual review
 bewt-pipeline import-excel --source crawled            # after annotating the Excel
@@ -152,6 +164,25 @@ All patches are opt-in via system properties (unset = original behavior):
    cookie survives resets, every reset lands on the dashboard instead of the
    login page, earlier states become unreachable, and the crawl exhausts after
    a handful of states.
+
+Fixes committed in the clone (`4cb6a97`), found while validating the crawled
+pipeline on Bludit — before them no generated test compiled or replayed,
+after them the generated suite replays 30/30 on a fresh app:
+
+4. Recorder (`WebDriverBackedEmbeddedBrowser`): frame names are written as
+   quoted Java strings (`frame(jseditor_ifr)` did not compile).
+5. Recorder: closing extra browser tabs is recorded as
+   `BasePageObject.closeOtherWindows(driver);` (new helper in
+   `staticfiles/BasePageObject.java`) instead of literal window handles,
+   which are random per session and fail on replay ("no such window").
+6. Crawler (`WebDriverBrowserBuilder`) and generated `DriverProvider` use the
+   same `--window-size=1280,800`. Responsive pages show different elements at
+   different widths (Bludit's collapsed navbar toggle); the crawl used
+   Chrome's default width and the replay a malformed `1200x600`.
+7. Generated suites (`templates/TestSuite*.java`) clear cookies before each
+   test when `-Dcrawljax.reset.clearCookies=true`, mirroring the crawl reset.
+8. `BluditConfig`: third-party scripts are excluded from JS coverage; an empty
+   setting made the generated `Properties` throw in every test's setup.
 
 ## Bludit as a DANTE subject (added for this project)
 

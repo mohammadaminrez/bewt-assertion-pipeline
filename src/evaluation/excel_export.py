@@ -163,7 +163,6 @@ def export_crawled_results_to_excel(
         key = f"{r.test_record.app}|{r.test_record.class_name}|{r.treatment}|{r.model}"
         entry = state_map.get(r.test_record.class_name, {})
         trace = entry.get("trace_comment", "").replace("// ", "")
-        final_state = entry.get("final_state", "?")
         rows.append({
             "App": r.test_record.app,
             "Test Class": r.test_record.class_name,
@@ -172,7 +171,7 @@ def export_crawled_results_to_excel(
             "Model": r.model,
             "Action Trace": trace,
             "Crawljax Oracle (baseline)": (
-                f"invariants + DOM/screenshot state-equivalence vs {final_state}"
+                "invariants + DOM/screenshot state-equivalence vs the crawled state"
                 + oracle_summary
             ),
             "LLM Assertion": r.generated_assertion,

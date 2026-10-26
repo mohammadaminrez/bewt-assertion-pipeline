@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import pytest
@@ -8,7 +7,7 @@ from src.data.store import ResultStore
 from src.llm.types import LLMResponse
 from src.runner import run_crawled_experiment
 
-from tests.test_dante_ingest import RESULT_JSON, SUITE_SOURCE
+from tests.test_dante_ingest import SUITE_SOURCE
 
 
 class FakeLLM:
@@ -32,23 +31,20 @@ class FakeConfig:
         self.default_model = "fake-model"
         self.output_dir = tmp_path / "output"
         self._suite = tmp_path / "GeneratedTestSuiteFired.java"
-        self._crawl = tmp_path / "crawl-with-inputs"
 
     def get_dante_suite_path(self, app):
         return self._suite
-
-    def get_dante_crawl_dir(self, app):
-        return self._crawl
 
 
 @pytest.fixture
 def config(tmp_path):
     cfg = FakeConfig(tmp_path)
     cfg._suite.write_text(SUITE_SOURCE)
-    (cfg._crawl / "doms").mkdir(parents=True)
-    (cfg._crawl / "result.json").write_text(json.dumps(RESULT_JSON))
-    for state in RESULT_JSON["states"]:
-        (cfg._crawl / "doms" / f"{state}.html").write_text(f"<html>{state}</html>")
+    # pages captured by the crawled reference run at each test's assertion point
+    html_dir = cfg.output_dir / "reference-crawled" / "bludit" / "html"
+    html_dir.mkdir(parents=True)
+    for name in ("CrawledBluditTest0", "CrawledBluditTest1"):
+        (html_dir / f"{name}.html").write_text(f"<html>captured {name}</html>")
     return cfg
 
 
@@ -91,8 +87,8 @@ def test_crawled_treatments_control_prompt_context(config, fake_llm):
     assert "// The test" not in prompt_a and "```html" not in prompt_a
     assert "// The test" in prompt_b and "```html" not in prompt_b
     assert "// The test" in prompt_c and "```html" in prompt_c
-    # Treatment C carries the final state's crawled DOM.
-    assert "<html>\nstate2\n</html>" in prompt_c  # cleaned: one node per line
+    # Treatment C carries the page captured at the assertion point (cleaned).
+    assert "<html>\ncaptured CrawledBluditTest0\n</html>" in prompt_c
 
 
 def test_run_crawled_experiment_is_resumable(config, fake_llm):

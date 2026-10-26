@@ -7,7 +7,6 @@ from src.ingest.dante import (
     PLACEHOLDER,
     crawled_variant_source,
     ingest_dante_suite,
-    load_state_graph,
     parse_generated_suite,
     to_test_records,
 )
@@ -57,43 +56,6 @@ public class GeneratedTestSuiteFired {
 }
 """
 
-RESULT_JSON = {
-    "states": {
-        "index": {"name": "index", "url": "http://localhost:8080/"},
-        "state1": {"name": "state1", "url": "http://localhost:8080/new"},
-        "state2": {"name": "state2", "url": "http://localhost:8080/saved"},
-    },
-    "edges": [
-        {
-            "from": "index",
-            "to": "state1",
-            "id": "xpath //A[@id = 'new-content']",
-            "text": "New content",
-            "element": "Element{tag=A, text=New content}",
-            "eventType": "click",
-        },
-        {
-            "from": "state1",
-            "to": "state2",
-            "id": "xpath //BUTTON[@id = 'save']",
-            "text": "Save",
-            "element": "Element{tag=BUTTON, text=Save}",
-            "eventType": "click",
-        },
-    ],
-}
-
-
-@pytest.fixture
-def crawl_dir(tmp_path: Path) -> Path:
-    crawl = tmp_path / "crawl-with-inputs"
-    (crawl / "doms").mkdir(parents=True)
-    (crawl / "result.json").write_text(json.dumps(RESULT_JSON))
-    for state in RESULT_JSON["states"]:
-        (crawl / "doms" / f"{state}.html").write_text(f"<html><body>{state}</body></html>")
-    return crawl
-
-
 @pytest.fixture
 def suite_path(tmp_path: Path) -> Path:
     path = tmp_path / "GeneratedTestSuiteFired.java"
@@ -107,15 +69,9 @@ def test_parse_generated_suite_finds_all_methods(suite_path):
     assert "new-content" in methods[0][1]
 
 
-def test_load_state_graph_normalizes_edge_keys(crawl_dir):
-    _, edges = load_state_graph(crawl_dir)
-    assert ("index", "//a[@id='new-content']") in edges
-    assert edges[("index", "//a[@id='new-content']")].target == "state1"
-
-
-def test_ingest_writes_placeholdered_class_per_test(suite_path, crawl_dir, tmp_path):
+def test_ingest_writes_placeholdered_class_per_test(suite_path, tmp_path):
     out = tmp_path / "out"
-    tests = ingest_dante_suite("bludit", suite_path, crawl_dir, out)
+    tests = ingest_dante_suite("bludit", suite_path, out)
 
     assert len(tests) == 2
     for t in tests:
@@ -131,31 +87,21 @@ def test_ingest_writes_placeholdered_class_per_test(suite_path, crawl_dir, tmp_p
     assert set(state_map) == {t.class_name for t in tests}
 
 
-def test_ingest_maps_final_state_dom(suite_path, crawl_dir, tmp_path):
-    tests = ingest_dante_suite("bludit", suite_path, crawl_dir, tmp_path / "out")
-
+def test_trace_comment_is_read_from_the_statements(suite_path, tmp_path):
+    tests = ingest_dante_suite("bludit", suite_path, tmp_path / "out")
     t0 = next(t for t in tests if t.method_name == "test0")
-    assert t0.final_state == "state2"
-    assert t0.state_dom_path is not None
-    assert Path(t0.state_dom_path).read_text() == "<html><body>state2</body></html>"
-
-    # test1 clicks an element with no matching edge: stays anchored at index.
+    assert "opens http://localhost:8080" in t0.trace_comment
+    assert "clicks the element //A[@id = 'new-content']" in t0.trace_comment
+    assert 'types "My first post" into the element with id "title"' in t0.trace_comment
+    assert "clicks the element //BUTTON[@id = 'save']" in t0.trace_comment
+    # no state name is claimed: the reached page is captured by the reference run
+    assert t0.trace_comment.endswith("// Verify the state of the page reached at this point.")
     t1 = next(t for t in tests if t.method_name == "test1")
-    assert t1.final_state == "index"
-    assert t1.state_dom_path is not None
+    assert "clicks the element //a[@id=\"unknown\"]" in t1.trace_comment
 
 
-def test_trace_comment_describes_actions(suite_path, crawl_dir, tmp_path):
-    tests = ingest_dante_suite("bludit", suite_path, crawl_dir, tmp_path / "out")
-    t0 = next(t for t in tests if t.method_name == "test0")
-    assert 'clicks "New content"' in t0.trace_comment
-    assert 'types "My first post" into title' in t0.trace_comment
-    assert 'clicks "Save"' in t0.trace_comment
-    assert "state2" in t0.trace_comment
-
-
-def test_to_test_records_have_no_gold_assertions(suite_path, crawl_dir, tmp_path):
-    tests = ingest_dante_suite("bludit", suite_path, crawl_dir, tmp_path / "out")
+def test_to_test_records_have_no_gold_assertions(suite_path, tmp_path):
+    tests = ingest_dante_suite("bludit", suite_path, tmp_path / "out")
     records = to_test_records(tests, "3.13.1")
     assert all(r.assertions == [] for r in records)
     assert all(r.variant == "crawled" for r in records)
@@ -163,10 +109,8 @@ def test_to_test_records_have_no_gold_assertions(suite_path, crawl_dir, tmp_path
     assert PLACEHOLDER in records[0].stripped_source
 
 
-def test_crawled_variant_source_inserts_comment_above_placeholder(
-    suite_path, crawl_dir, tmp_path
-):
-    tests = ingest_dante_suite("bludit", suite_path, crawl_dir, tmp_path / "out")
+def test_crawled_variant_source_inserts_comment_above_placeholder(suite_path, tmp_path):
+    tests = ingest_dante_suite("bludit", suite_path, tmp_path / "out")
     records = to_test_records(tests, "3.13.1")
     t0, r0 = tests[0], records[0]
 

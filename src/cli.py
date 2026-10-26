@@ -183,22 +183,29 @@ def generate_variants(ctx, app):
 
 @main.command(name="reference-run")
 @click.option("--app", "-a", required=True, help="App to run the gold suite for")
+@click.option("--source", type=click.Choice(["bewt", "crawled"]), default="bewt",
+              help="bewt: the benchmark's gold suite; crawled: the DANTE-generated replays")
 @click.pass_context
-def reference_run(ctx, app):
-    """Run the gold suite once on a fresh app: save per-test state snapshots
-    and the HTML at each assertion point (needed for C/D and --execute)."""
+def reference_run(ctx, app, source):
+    """Run the tests once on a fresh app, in order: save per-test state
+    snapshots and the HTML at each assertion point (needed for C/D and --execute)."""
     config = ctx.obj["config"]
-    _validate_bewt_repo(config)
-    if not _validate_app_exists(config, app):
-        return
-    click.echo(f"\n=== Reference run for {app} ===")
+    click.echo(f"\n=== {source} reference run for {app} ===")
     try:
-        reference = build_reference(config, app, log=click.echo)
+        if source == "crawled":
+            from .execution.reference import build_crawled_reference
+            reference = build_crawled_reference(config, app, log=click.echo)
+        else:
+            _validate_bewt_repo(config)
+            if not _validate_app_exists(config, app):
+                return
+            reference = build_reference(config, app, log=click.echo)
     except ReferenceRunError as e:
         raise click.ClickException(str(e))
+    tests = len(reference["order"]) - 1
     click.echo(click.style(
-        f"\nAll {len(reference['order'])} gold tests passed; "
-        f"{len(reference['snapshots'])} snapshots and HTML pages saved.", fg="green"))
+        f"\nAll {tests} tests passed (after setup); {len(reference['snapshots'])} snapshots "
+        f"and the HTML at every assertion point saved.", fg="green"))
 
 
 @main.command(name="rescore")
@@ -222,14 +229,20 @@ def rescore(ctx, app):
 
 @main.command(name="verify-execution")
 @click.option("--app", "-a", required=True, help="App whose execution harness to verify")
+@click.option("--source", type=click.Choice(["bewt", "crawled"]), default="bewt",
+              help="bewt: gold assertions; crawled: the captured page title (no gold exists)")
 @click.pass_context
-def verify_execution(ctx, app):
-    """Positive/negative controls: gold assertions must pass and their
-    negations must fail when run through the isolated execution path."""
+def verify_execution(ctx, app, source):
+    """Positive/negative controls: a known-true assertion must pass and its
+    negation must fail when run through the isolated execution path."""
     config = ctx.obj["config"]
-    click.echo(f"\n=== Execution controls for {app} ===")
+    click.echo(f"\n=== Execution controls for {app} ({source}) ===")
     try:
-        rows = run_controls(config, app, log=click.echo)
+        if source == "crawled":
+            from .execution.controls import run_crawled_controls
+            rows = run_crawled_controls(config, app, log=click.echo)
+        else:
+            rows = run_controls(config, app, log=click.echo)
     except ReferenceRunError as e:
         raise click.ClickException(str(e))
     bad = [r for r in rows if not (r["positive"]["ok"] and r["negative"]["ok"])]
@@ -240,7 +253,7 @@ def verify_execution(ctx, app):
                            f"passed={r[kind]['passed']} {r[kind]['note']} {r[kind]['message']}")
     color = "green" if not bad else "red"
     click.echo(click.style(f"\n{len(rows) - len(bad)}/{len(rows)} tests behave correctly "
-                           "(gold passes, negation fails).", fg=color))
+                           "(known-true assertion passes, negation fails).", fg=color))
     if bad:
         raise SystemExit(1)
 
@@ -375,12 +388,11 @@ def _run_crawled(config, app, models, treatments, execute, limit):
 @click.option("--app", "-a", required=True, help="App whose DANTE crawl to ingest")
 @click.pass_context
 def ingest_crawl(ctx, app):
-    """Ingest a DANTE-generated test suite: split tests, add placeholders, map state DOMs."""
+    """Ingest a DANTE-generated test suite: split tests, add placeholders, render action traces."""
     from .ingest.dante import ingest_dante_suite
 
     config = ctx.obj["config"]
     suite_path = config.get_dante_suite_path(app)
-    crawl_dir = config.get_dante_crawl_dir(app)
     if not suite_path.exists():
         raise click.ClickException(
             f"DANTE-generated suite not found for {app}:\n  {suite_path}\n"
@@ -388,14 +400,14 @@ def ingest_crawl(ctx, app):
         )
 
     output_dir = config.output_dir / "crawled" / app
-    tests = ingest_dante_suite(app, suite_path, crawl_dir, output_dir)
+    tests = ingest_dante_suite(app, suite_path, output_dir)
 
     click.echo(f"Ingested {len(tests)} crawled tests from {suite_path.name}:")
     for t in tests:
-        dom = "dom:yes" if t.state_dom_path else click.style("dom:MISSING", fg="yellow")
-        click.echo(f"  {t.class_name}  final={t.final_state}  {dom}")
+        click.echo(f"  {t.class_name}  ({t.method_name})")
     click.echo(f"\nPlaceholdered classes written to {output_dir / 'tests'}")
-    click.echo(f"State map written to {output_dir / 'state_map.json'}")
+    click.echo(f"Action traces written to {output_dir / 'state_map.json'}")
+    click.echo(f"Next: bewt-pipeline reference-run --app {app} --source crawled")
 
 
 @main.command()

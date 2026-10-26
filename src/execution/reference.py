@@ -29,6 +29,7 @@ from typing import Callable
 
 from ..config import Config
 from ..parsing.java_parser import parse_all_tests
+from ..parsing.java_parser import PLACEHOLDER
 from .java_injector import ensure_assert_imports, fix_java_version, localize_base_url
 from .test_runner import CompileResult, TestResult
 
@@ -39,8 +40,9 @@ class ReferenceRunError(RuntimeError):
     """The gold suite did not run cleanly, so no trustworthy reference exists."""
 
 
-def reference_dir(config: Config, app: str) -> Path:
-    return config.output_dir / "reference" / app
+def reference_dir(config: Config, app: str, source: str = "bewt") -> Path:
+    folder = "reference" if source == "bewt" else "reference-crawled"
+    return config.output_dir / folder / app
 
 
 def _docker(config: Config, app: str) -> dict:
@@ -141,25 +143,29 @@ def _prepare_project(config: Config, app: str, dest: Path, log: Log) -> str:
     return f"{dest / 'target' / 'test-classes'}:{dest / 'target' / 'classes'}:{deps}"
 
 
-def compile_java(sources: list[Path], out_dir: Path, classpath: str) -> CompileResult:
+def compile_java(sources: list[Path], out_dir: Path, classpath: str,
+                 env: dict | None = None) -> CompileResult:
     out_dir.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         ["javac", "-encoding", "UTF-8", "-nowarn", "-d", str(out_dir), "-cp", classpath,
          *[str(s) for s in sources]],
-        capture_output=True, text=True, timeout=300,
+        capture_output=True, text=True, timeout=300, env=env,
     )
     errors = [line for line in result.stderr.splitlines() if "error:" in line]
     return CompileResult(success=result.returncode == 0, errors=errors or result.stderr.splitlines()[:5])
 
 
-def run_junit(classpath: str, fqcn: str, timeout: int = 300) -> TestResult:
-    """Run one test class with JUnitCore."""
+def run_junit(classpath: str, fqcn: str, timeout: int = 300, env: dict | None = None,
+              cwd: Path | None = None) -> TestResult:
+    """Run one test class with JUnitCore (in `cwd`, for projects that read
+    resources relative to the working directory)."""
     class_name = fqcn.rsplit(".", 1)[-1]
     started = time.time()
     try:
         result = subprocess.run(
             ["java", "-cp", classpath, "org.junit.runner.JUnitCore", fqcn],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, env=env,
+            cwd=str(cwd) if cwd else None,
         )
     except subprocess.TimeoutExpired:
         return TestResult(class_name, "unknown", passed=False, failed=True, errored=True,
@@ -252,13 +258,22 @@ def build_reference(config: Config, app: str, log: Log = print) -> dict:
     return reference
 
 
-def load_reference(config: Config, app: str) -> dict:
-    path = reference_dir(config, app) / "reference.json"
+def load_reference(config: Config, app: str, source: str = "bewt") -> dict:
+    path = reference_dir(config, app, source) / "reference.json"
     if not path.exists():
+        command = "reference-run" if source == "bewt" else "reference-run --source crawled"
         raise ReferenceRunError(
-            f"No reference run for {app}. Run 'bewt-pipeline reference-run --app {app}' first."
+            f"No {source} reference run for {app}. Run 'bewt-pipeline {command} --app {app}' first."
         )
     return json.loads(path.read_text())
+
+
+def _toolchain(reference: dict) -> dict | None:
+    """Environment for compiling/running a reference's tests (None = this JVM's default)."""
+    if reference.get("toolchain") == "dante":
+        from .dante_runner import _toolchain_env
+        return _toolchain_env()
+    return None
 
 
 def run_isolated(
@@ -267,10 +282,12 @@ def run_isolated(
     class_name: str,
     test_source: str,
     work_dir: Path,
+    source: str = "bewt",
 ) -> tuple[CompileResult, TestResult | None]:
     """Compile `test_source` (a complete test class) and run it on the app
     state saved just before that test in the reference run."""
-    reference = load_reference(config, app)
+    reference = load_reference(config, app, source)
+    env = _toolchain(reference)
     order = reference["order"]
     if class_name not in order[1:]:
         raise ReferenceRunError(f"{class_name} is not in {app}'s TestSuite order")
@@ -281,12 +298,108 @@ def run_isolated(
     source_file = work_dir / "src" / package / f"{class_name}.java"
     source_file.parent.mkdir(parents=True)
     source_file.write_text(ensure_assert_imports(test_source))
-    compiled = compile_java([source_file], work_dir / "classes", reference["classpath"])
+    compiled = compile_java([source_file], work_dir / "classes", reference["classpath"], env)
     if not compiled.success:
         return compiled, None
 
     before = reference["snapshots"][order.index(class_name) - 1]
     ensure_app_running(config, app)
-    restore_state(config, app, reference_dir(config, app) / "snapshots" / before)
-    result = run_junit(f"{work_dir / 'classes'}:{reference['classpath']}", f"{package}.{class_name}")
+    restore_state(config, app, reference_dir(config, app, source) / "snapshots" / before)
+    result = run_junit(f"{work_dir / 'classes'}:{reference['classpath']}", f"{package}.{class_name}",
+                       env=env, cwd=reference.get("workdir"))
     return compiled, result
+
+
+# --- crawled (DANTE) reference run ---------------------------------------------
+
+def _install_with_dante(config: Config, app: str) -> None:
+    """Fresh container installed exactly as for the crawl (DANTE's run-docker.sh)."""
+    docker = _docker(config, app)
+    script_dir = config.dante_repo_path / "dante" / "docker" / app
+    subprocess.run(["docker", "rm", "-f", docker["container"]], capture_output=True)
+    result = subprocess.run(["./run-docker.sh", "-p", "yes", "-n", docker["container"]],
+                            cwd=str(script_dir), capture_output=True, text=True, timeout=300)
+    if result.returncode != 0 or "installed and ready" not in result.stdout:
+        raise ReferenceRunError(f"DANTE install of {app} failed:\n{result.stdout[-1500:]}{result.stderr[-500:]}")
+
+
+def build_crawled_reference(config: Config, app: str, log: Log = print) -> dict:
+    """Replay the crawled tests once, in crawl order, on a freshly installed app.
+
+    The crawl ran its paths one after another without resetting app data, so
+    each test starts from the state the previous ones left. For every test the
+    replay must pass on its own; the page at the assertion point is captured
+    (treatment C context) and the app state is saved after it.
+    """
+    from ..ingest.dante import ingest_dante_suite
+    from .dante_runner import _toolchain_env
+
+    env = _toolchain_env()
+    root = reference_dir(config, app, "crawled")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+
+    log("  Preparing and compiling the DANTE test project...")
+    project = root / "project"
+    shutil.copytree(config.get_dante_testsuite_project_path(app), project,
+                    ignore=shutil.ignore_patterns("target", "coverage-reports", "all-coverage-reports"))
+    for cmd in (["mvn", "-q", "compile"],
+                ["mvn", "-q", "dependency:build-classpath", "-Dmdep.outputFile=classpath.txt"]):
+        result = subprocess.run(cmd, cwd=str(project), capture_output=True, text=True, timeout=900, env=env)
+        if result.returncode != 0:
+            raise ReferenceRunError(f"{' '.join(cmd)} failed:\n{(result.stdout + result.stderr)[-2000:]}")
+    classpath = f"{project / 'target' / 'classes'}:{(project / 'classpath.txt').read_text().strip()}"
+
+    crawled = ingest_dante_suite(app, config.get_dante_suite_path(app), config.output_dir / "crawled" / app)
+    order = [t.class_name for t in sorted(crawled, key=lambda t: int(re.sub(r"\D", "", t.method_name)))]
+    by_class = {t.class_name: t for t in crawled}
+
+    html_dir = root / "html"
+    html_dir.mkdir()
+    instr_src = root / "instrumented-src" / "tests"
+    instr_src.mkdir(parents=True)
+    for name in order:
+        lines = by_class[name].class_source.split("\n")
+        index = next(i for i, l in enumerate(lines) if PLACEHOLDER in l)
+        indent = lines[index][:len(lines[index]) - len(lines[index].lstrip())]
+        lines[index] = indent + _capture_statement(html_dir / f"{name}.html")
+        (instr_src / f"{name}.java").write_text("\n".join(lines))
+    instr_classes = root / "instrumented-classes"
+    compiled = compile_java(sorted(instr_src.glob("*.java")), instr_classes, classpath, env)
+    if not compiled.success:
+        raise ReferenceRunError("Instrumented crawled tests do not compile:\n" + "\n".join(compiled.errors))
+
+    log("  Installing a fresh app container (DANTE's installer)...")
+    _install_with_dante(config, app)
+    snapshots = ["00_install.tar"]
+    snapshot_state(config, app, root / "snapshots" / snapshots[0])
+
+    results = []
+    for index, name in enumerate(order, 1):
+        # DANTE's generated Properties read src/main/resources/app.properties
+        # relative to the working directory.
+        result = run_junit(f"{instr_classes}:{classpath}", f"tests.{name}", env=env, cwd=project)
+        results.append({"class": name, "passed": result.passed, "seconds": result.time_seconds,
+                        "message": result.error_message})
+        if not result.passed:
+            raise ReferenceRunError(f"Replay of {name} failed in the reference run: {result.error_message}")
+        snapshot = root / "snapshots" / f"{index:02d}_{name}.tar"
+        snapshot_state(config, app, snapshot)
+        snapshots.append(snapshot.name)
+        log(f"  [{index:02d}] {name}: PASS ({result.time_seconds}s)")
+
+    reference = {
+        "app": app,
+        "source": "crawled",
+        "toolchain": "dante",
+        "workdir": str(project),
+        "package": "tests",
+        "order": ["(install)"] + order,
+        "snapshots": snapshots,
+        "classpath": classpath,
+        "results": results,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    (root / "reference.json").write_text(json.dumps(reference, indent=2))
+    return reference

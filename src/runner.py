@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Core experiment runner — no CLI dependency. Can be called from notebooks."""
 
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -21,7 +22,7 @@ from .llm.response_parser import (
     validate_assertion,
 )
 from .execution.java_injector import fill_placeholders
-from .execution.reference import ReferenceRunError, load_reference, run_isolated
+from .execution.reference import ReferenceRunError, load_reference, reference_dir, run_isolated
 from .evaluation.comparator import classify_outcome, compute_semantic_similarity, check_exact_match
 from .evaluation.reporter import generate_full_report
 from .data.store import ResultStore
@@ -425,12 +426,13 @@ def run_crawled_experiment(
     Differences from :func:`run_experiment`:
     - tests come from the ingested DANTE suite (``ingest-crawl``), have no gold
       standard, and therefore no exact-match / similarity metrics;
-    - context sources are the auto-generated action trace (treatment B) and the
-      crawled per-state DOM (treatment C) — no Gherkin / Page Objects / Strings;
-    - with ``execute``, tests run inside a copy of the DANTE test project with
-      the pinned JDK 8 toolchain, against a freshly reset app container, and
-      the stored error category is execution-based: correct if the assertion
-      holds on the live app, wrong_assertion if it fails.
+    - context sources are the action trace rendered from the test's own
+      statements (treatment B) and the page captured at the assertion point by
+      the crawled reference run (treatment C) — no Gherkin / Page Objects;
+    - with ``execute``, each answer runs alone (DANTE's JDK 8 toolchain) on the
+      app state saved just before its test in the crawled reference run;
+      categories come from execution (not_executable / wrong_assertion), and
+      an assertion that holds is left for the meaningfulness review.
     """
     from .ingest.dante import (
         crawled_variant_source,
@@ -441,37 +443,34 @@ def run_crawled_experiment(
         build_crawled_assertion_prompt,
         crawled_treatment_ingredients,
     )
-    from .execution.dante_runner import (
-        compile_crawled_project,
-        prepare_crawled_project_copy,
-        reset_crawled_app,
-        run_crawled_test,
-    )
 
     models = models or [config.default_model]
     app_config = config.apps.get(app, {})
     version = (app_config.get("versions") or ["crawled"])[0]
 
     suite_path = config.get_dante_suite_path(app)
-    crawl_dir = config.get_dante_crawl_dir(app)
     if not suite_path.exists():
         raise FileNotFoundError(
             f"DANTE-generated suite not found: {suite_path}\n"
             f"Run the crawl first (see docs/dante-setup.md)."
         )
 
-    crawled = ingest_dante_suite(app, suite_path, crawl_dir, config.output_dir / "crawled" / app)
+    crawled = ingest_dante_suite(app, suite_path, config.output_dir / "crawled" / app)
     by_class = {t.class_name: t for t in crawled}
-    records = to_test_records(crawled, version)
+    records = sorted(to_test_records(crawled, version),
+                     key=lambda r: int(re.sub(r"\D", "", r.method_name)))
     if limit is not None:
         records = records[:limit]
 
+    html_dir = reference_dir(config, app, "crawled") / "html"
     html_treatments = [t for t in treatments if crawled_treatment_ingredients(t).html]
-    missing = [r.class_name for r in records if not by_class[r.class_name].state_dom_path]
-    if html_treatments and missing:
+    missing = [r.class_name for r in records if not (html_dir / f"{r.class_name}.html").exists()]
+    if (html_treatments or execute) and missing:
         raise MissingContextError(
-            f"Treatment(s) {', '.join(html_treatments)} need the crawled state DOM, "
-            f"but {len(missing)} test(s) have none:\n  " + "\n  ".join(missing)
+            f"Treatment(s) {', '.join(html_treatments) or '(execution)'} need the crawled "
+            f"reference run, but {len(missing)} test(s) have no captured page:\n  "
+            + "\n  ".join(missing)
+            + f"\nRun 'bewt-pipeline reference-run --app {app} --source crawled' first."
         )
 
     total = len(records) * len(treatments) * len(models)
@@ -506,8 +505,8 @@ def run_crawled_experiment(
 
                 html = None
                 if ingredients.html:
-                    # Presence is guaranteed by the check above.
-                    html = Path(crawled_test.state_dom_path).read_text()
+                    # Captured by the reference run; presence checked above.
+                    html = (html_dir / f"{record.class_name}.html").read_text()
 
                 system, user = build_crawled_assertion_prompt(
                     record,
@@ -548,39 +547,42 @@ def run_crawled_experiment(
                     generated_assertion=generated,
                 )
 
+                notes = []
+                if valid and has_extra_statements(generated):
+                    notes.append("answer contains non-assertion statements")
                 if not valid:
                     result.error_category = ErrorCategory.NOT_EXECUTABLE
-                    result.notes = "Generated assertion failed validation"
+                    notes.append("answer contains no assertion call")
                     _progress(t, record.class_name, "invalid")
                 elif not execute:
-                    result.notes = "execution skipped; no gold standard for crawled tests"
+                    notes.append("execution skipped")
                     _progress(t, record.class_name, "generated")
                 else:
-                    reset_crawled_app(config, app)
-                    work_dir = prepare_crawled_project_copy(
-                        config, app, record, generated, variant_source, t, model_name,
+                    filled, fill_note = fill_placeholders(variant_source, generated)
+                    if fill_note:
+                        notes.append(fill_note)
+                    work_dir = config.output_dir / "runs-crawled" / app / model_name / t / record.class_name
+                    compile_res, test_res = run_isolated(
+                        config, app, record.class_name, filled, work_dir, source="crawled",
                     )
-                    compile_res = compile_crawled_project(work_dir)
                     result.compiles = compile_res.success
-
-                    if compile_res.success:
-                        test_res = run_crawled_test(work_dir, record.class_name)
+                    error_type = ""
+                    if test_res is not None:
                         result.passes = test_res.passed
+                        error_type = test_res.error_type
+                        result.failure_type = "" if test_res.passed else error_type
                         if test_res.error_message:
-                            result.notes = test_res.error_message[:500]
-                        result.error_category = (
-                            ErrorCategory.CORRECT if test_res.passed
-                            else ErrorCategory.WRONG_ASSERTION
-                        )
+                            notes.append(test_res.error_message[:500])
                     else:
-                        result.error_category = ErrorCategory.NOT_EXECUTABLE
-                        result.notes = "; ".join(compile_res.errors[:3])
-
-                    note_suffix = "category is execution-based (no gold standard)"
-                    result.notes = (result.notes + "; " if result.notes else "") + note_suffix
+                        notes.append("; ".join(compile_res.errors[:3]))
+                    # No gold: an assertion that holds awaits the meaningfulness
+                    # review (needs_review); failures are decided by execution.
+                    result.error_category = classify_outcome(
+                        generated, [], result.compiles, result.passes, error_type,
+                    )
                     status = "PASS" if result.passes else "FAIL"
-                    _progress(t, record.class_name,
-                              f"{status}:cat={result.error_category.value}")
+                    _progress(t, record.class_name, f"{status}:cat={result.error_category.value}")
+                result.notes = " | ".join(notes)
 
                 experiment_id = store.save_result(result)
                 _save_and_emit_llm_call(store, _build_generation_call(

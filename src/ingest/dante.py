@@ -11,21 +11,13 @@ DANTE (ICST'20) crawls a web app with a Crawljax fork and generates two suites:
   — the Crawljax *oracle suite* (TestNG): the same paths asserted with
   invariants + DOM/screenshot state-equivalence (the comparison baseline).
 
-The crawl output also holds the state-flow graph (``result.json``: states +
-edges keyed by the fired element's XPath) and one DOM snapshot per state
-(``doms/<state>.html``).
-
-This module:
-
-1. parses the JUnit suite into individual test methods;
-2. walks each method's click sequence through the state-flow graph to find the
-   state reached at the end of the test (its DOM = the "HTML at the assertion
-   point", the treatment-C context);
-3. renders a natural-language action trace (the treatment-B comment analog);
-4. emits one single-test Java class per method, with the pipeline's standard
-   placeholder inserted where the assertion should go — so the existing
-   variant/injection/execution machinery works unchanged (results are keyed
-   and executed per class, exactly like BEWT tests).
+This module splits the JUnit suite into one single-test class per method,
+with the pipeline's standard placeholder where the assertion should go, and
+renders a natural-language action trace (the treatment-B comment) from the
+test's own statements. The page at the assertion point (treatment C) is not
+derived here: it is captured by replaying each test in the crawled reference
+run (execution/reference.py), since mapping a test onto the crawl's state
+graph is unreliable.
 """
 
 import json
@@ -54,31 +46,14 @@ class CrawledTest:
 
     app: str
     source_class: str          # class the method came from (e.g. GeneratedTestSuiteFired)
-    method_name: str           # original method name (e.g. test3)
-    class_name: str            # generated standalone class name (e.g. CrawledBluditTest3)
+    method_name: str           # original method name (e.g. test03)
+    class_name: str            # generated standalone class name (e.g. CrawledBluditTest03)
     class_source: str          # standalone class with PLACEHOLDER, no assertion
-    final_state: str           # state-flow-graph state reached at the end of the path
-    state_dom_path: str | None  # doms/<final_state>.html if it exists
     trace_comment: str         # "// The test ..." natural-language action trace
-    visited_states: list[str] = field(default_factory=list)
 
 
 def _unescape_java(s: str) -> str:
     return s.replace('\\"', '"').replace("\\\\", "\\")
-
-
-def _normalize_xpath(xpath: str) -> str:
-    """Normalize an XPath for matching test actions to graph edges.
-
-    The generated tests and ``result.json`` edges format the same XPath
-    differently (case, spaces around ``=``, quote style), e.g.
-    ``//a[@id="home"]`` vs ``xpath //A[@id = 'home']``.
-    """
-    x = xpath.strip()
-    x = re.sub(r"^xpath\s+", "", x)
-    x = re.sub(r"\s+", "", x)
-    x = x.replace('"', "'")
-    return x.lower()
 
 
 def _statements(body: str) -> list[str]:
@@ -87,73 +62,30 @@ def _statements(body: str) -> list[str]:
     return [s.strip() + ";" for s in joined.split(";") if s.strip()]
 
 
-@dataclass
-class _Edge:
-    target: str
-    element_text: str
+_GET_RE = re.compile(r'driver\.get\("((?:[^"\\]|\\.)*)"\)')
 
 
-def load_state_graph(crawl_dir: Path) -> tuple[dict[str, dict], dict[tuple[str, str], _Edge]]:
-    """Load states and (source, normalized-xpath) -> edge from result.json."""
-    result = json.loads((crawl_dir / "result.json").read_text())
-    states = result["states"]
-    edges: dict[tuple[str, str], _Edge] = {}
-    for edge in result["edges"]:
-        key = (edge["from"], _normalize_xpath(edge["id"]))
-        text_match = re.search(r"text=([^,}]*)", edge.get("element", "") or "")
-        element_text = (edge.get("text") or "").strip() or (
-            text_match.group(1).strip() if text_match else ""
-        )
-        edges[key] = _Edge(target=edge["to"], element_text=element_text)
-    return states, edges
-
-
-def _walk_states(
-    statements: list[str],
-    edges: dict[tuple[str, str], _Edge],
-    initial_state: str = "index",
-) -> tuple[str, list[str], list[str]]:
-    """Replay click statements through the graph.
-
-    Returns (final_state, visited_states, trace_lines). Unmatched clicks keep
-    the current state (Crawljax reset actions and near-duplicate states make a
-    perfect walk impossible; the final state is a best-effort anchor).
-    """
-    current = initial_state
-    visited = [current]
-    trace: list[str] = []
-
+def _describe_statements(statements: list[str]) -> list[str]:
+    """What the test does, read from its own statements (no guessing)."""
+    steps = []
     for stmt in statements:
-        if ".click()" in stmt:
-            xpath_match = _XPATH_RE.search(stmt)
-            id_match = _ID_RE.search(stmt)
-            if xpath_match:
-                locator = _normalize_xpath(_unescape_java(xpath_match.group(1)))
-            elif id_match:
-                locator = _normalize_xpath(f"//*[@id='{id_match.group(1)}']")
-            else:
-                continue
-            edge = edges.get((current, locator))
-            if edge is None:
-                # Path reset to the index state re-fires earlier events; try
-                # matching from the initial state as a fallback.
-                edge = edges.get((initial_state, locator))
-            if edge is not None:
-                label = edge.element_text or locator
-                trace.append(f'clicks "{label}"')
-                current = edge.target
-                visited.append(current)
-            else:
-                trace.append(f"clicks the element at {locator}")
-        elif ".sendKeys(" in stmt:
-            keys_match = _SENDKEYS_RE.search(stmt)
-            id_match = _ID_RE.search(stmt)
-            if keys_match:
-                value = _unescape_java(keys_match.group(1))
-                target = id_match.group(1) if id_match else "a form field"
-                trace.append(f'types "{value}" into {target}')
-
-    return current, visited, trace
+        locator = None
+        id_match, xpath_match = _ID_RE.search(stmt), _XPATH_RE.search(stmt)
+        if id_match:
+            locator = f'the element with id "{_unescape_java(id_match.group(1))}"'
+        elif xpath_match:
+            locator = f"the element {_unescape_java(xpath_match.group(1))}"
+        get_match = _GET_RE.search(stmt)
+        keys_match = _SENDKEYS_RE.search(stmt)
+        if get_match:
+            steps.append(f'opens {_unescape_java(get_match.group(1))}')
+        elif ".click()" in stmt and locator:
+            steps.append(f"clicks {locator}")
+        elif keys_match and locator:
+            steps.append(f'types "{_unescape_java(keys_match.group(1))}" into {locator}')
+        elif "closeOtherWindows" in stmt:
+            steps.append("closes the extra browser tab")
+    return steps
 
 
 def _dedupe_consecutive(items: list[str]) -> list[str]:
@@ -164,16 +96,11 @@ def _dedupe_consecutive(items: list[str]) -> list[str]:
     return out
 
 
-def _render_trace_comment(trace: list[str], final_state: str) -> str:
-    steps = _dedupe_consecutive(trace)
-    if not steps:
-        summary = "The test loads the application start page."
-    else:
-        summary = "The test " + "; then ".join(steps) + "."
-    return (
-        f"// {summary}\n"
-        f"// Verify the state of the page reached at this point ({final_state})."
-    )
+def _render_trace_comment(steps: list[str]) -> str:
+    steps = _dedupe_consecutive(steps)
+    summary = "The test " + "; then ".join(steps) + "." if steps else \
+        "The test loads the application start page."
+    return f"// {summary}\n// Verify the state of the page reached at this point."
 
 
 def _standalone_class(
@@ -225,7 +152,6 @@ def parse_generated_suite(suite_path: Path) -> list[tuple[str, str]]:
 def ingest_dante_suite(
     app: str,
     suite_path: Path,
-    crawl_dir: Path,
     output_dir: Path,
 ) -> list[CrawledTest]:
     """Parse the DANTE suite and write one placeholdered class per test.
@@ -233,7 +159,6 @@ def ingest_dante_suite(
     Args:
         app: pipeline app name (e.g. "bludit").
         suite_path: path to GeneratedTestSuiteFired.java.
-        crawl_dir: the crawl output dir holding result.json and doms/.
         output_dir: where the standalone classes and state map are written.
 
     Returns:
@@ -242,47 +167,31 @@ def ingest_dante_suite(
     """
     source = suite_path.read_text()
     source_class = re.search(r"public class (\w+)", source).group(1)
-    _, edges = load_state_graph(crawl_dir)
 
     tests_dir = output_dir / "tests"
+    if tests_dir.exists():
+        for old in tests_dir.glob("*.java"):
+            old.unlink()
     tests_dir.mkdir(parents=True, exist_ok=True)
 
     crawled: list[CrawledTest] = []
     for method_name, body in parse_generated_suite(suite_path):
-        stmts = _statements(body)
-        final_state, visited, trace = _walk_states(stmts, edges)
-        dom_path = crawl_dir / "doms" / f"{final_state}.html"
-
         index = re.sub(r"\D", "", method_name)
         class_name = f"Crawled{app.capitalize()}Test{index}"
         class_source = _standalone_class(source, body, class_name, method_name)
-
         (tests_dir / f"{class_name}.java").write_text(class_source)
-
         crawled.append(CrawledTest(
             app=app,
             source_class=source_class,
             method_name=method_name,
             class_name=class_name,
             class_source=class_source,
-            final_state=final_state,
-            state_dom_path=str(dom_path) if dom_path.exists() else None,
-            trace_comment=_render_trace_comment(trace, final_state),
-            visited_states=_dedupe_consecutive(visited),
+            trace_comment=_render_trace_comment(_describe_statements(_statements(body))),
         ))
 
-    state_map = {
-        t.class_name: {
-            "method": t.method_name,
-            "final_state": t.final_state,
-            "dom_path": t.state_dom_path,
-            "visited_states": t.visited_states,
-            "trace_comment": t.trace_comment,
-        }
-        for t in crawled
-    }
+    state_map = {t.class_name: {"method": t.method_name, "trace_comment": t.trace_comment}
+                 for t in crawled}
     (output_dir / "state_map.json").write_text(json.dumps(state_map, indent=2))
-
     return crawled
 
 

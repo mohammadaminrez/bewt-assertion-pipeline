@@ -24,9 +24,7 @@ def _crawled_result(class_name="CrawledBluditTest0", treatment="C", passes=True)
 STATE_MAP = {
     "CrawledBluditTest0": {
         "method": "test0",
-        "final_state": "state2",
-        "dom_path": None,
-        "trace_comment": '// The test clicks "New content"; then clicks "Save".\n// Verify the state (state2).',
+        "trace_comment": '// The test clicks the element with id "new-content"; then clicks the element with id "save".\n// Verify the state of the page reached at this point.',
     }
 }
 
@@ -41,10 +39,10 @@ def test_export_crawled_excel_side_by_side(tmp_path):
     df = pd.read_excel(out, sheet_name="Results")
     assert len(df) == 1
     row = df.iloc[0]
-    assert "state-equivalence vs state2" in row["Crawljax Oracle (baseline)"]
+    assert "state-equivalence vs the crawled state" in row["Crawljax Oracle (baseline)"]
     assert "1/2 methods pass" in row["Crawljax Oracle (baseline)"]
     assert row["LLM Pre-Classification"] == "semantic"
-    assert "New content" in row["Action Trace"]
+    assert "new-content" in row["Action Trace"]
     assert pd.isna(row["Manual Classification"]) or row["Manual Classification"] == ""
 
 
