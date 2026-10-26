@@ -92,32 +92,3 @@ def match_gherkin_to_test(
     """Find the Gherkin scenario matching a test class name."""
     normalized = _normalize_name(test_class_name)
     return gherkin_map.get(normalized)
-
-
-def generate_comment_from_assertion(assertion_text: str) -> str:
-    """Fallback: generate a descriptive comment from the gold-standard assertion itself.
-
-    Used when no Gherkin match is found.
-    """
-    text = assertion_text.strip()
-
-    if text.startswith("assertEquals"):
-        match = re.match(r'assertEquals\s*\(\s*(.+?)\s*,\s*(.+?)\s*\)\s*;?$', text, re.DOTALL)
-        if match:
-            expected = match.group(1).strip().strip('"')
-            actual = match.group(2).strip()
-            return f'// Assert that {actual} equals "{expected}"'
-
-    elif text.startswith("assertTrue"):
-        match = re.match(r'assertTrue\s*\(\s*(.+?)\s*\)\s*;?$', text, re.DOTALL)
-        if match:
-            expr = match.group(1).strip()
-            return f'// Assert that {expr} is true'
-
-    elif text.startswith("assertFalse"):
-        match = re.match(r'assertFalse\s*\(\s*(.+?)\s*\)\s*;?$', text, re.DOTALL)
-        if match:
-            expr = match.group(1).strip()
-            return f'// Assert that {expr} is false'
-
-    return f'// Assert the expected behavior of this test'

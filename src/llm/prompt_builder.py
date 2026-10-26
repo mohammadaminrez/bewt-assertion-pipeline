@@ -10,6 +10,8 @@ D=+project code (D is the full condition).
 from dataclasses import dataclass
 
 from ..models import TestRecord
+from ..parsing.java_parser import PLACEHOLDER
+from ..variants.html_clean import clean_html
 
 
 @dataclass(frozen=True)
@@ -116,114 +118,12 @@ def build_crawled_assertion_prompt(
     user = "\n".join(intro) + f"\n\nTest code:\n```java\n{variant_source}\n```"
 
     if html_content:
-        if len(html_content) > 8000:
-            html_content = html_content[:8000] + "\n<!-- ... truncated ... -->"
         user += (
             "\n\nHTML page content at the assertion point (captured during "
-            f"crawling):\n```html\n{html_content}\n```"
+            f"crawling):\n```html\n{clean_html(html_content)}\n```"
         )
 
     return CRAWLED_SYSTEM_PROMPT, user
-
-
-def build_prompt_a(record: TestRecord) -> tuple[str, str]:
-    """Variant A: Just the stripped test code."""
-    user = f"""Complete the following Selenium test by writing the missing assertion(s) where the TODO comment is:
-
-```java
-{record.stripped_source}
-```"""
-    return SYSTEM_PROMPT, user
-
-
-def build_prompt_b(record: TestRecord, variant_b_source: str) -> tuple[str, str]:
-    """Variant B: Stripped test code with descriptive comments."""
-    user = f"""Complete the following Selenium test by writing the missing assertion(s) where the TODO comment is.
-Descriptive comments have been added to explain what the assertion should check:
-
-```java
-{variant_b_source}
-```"""
-    return SYSTEM_PROMPT, user
-
-
-def build_prompt_c(
-    record: TestRecord,
-    variant_c_source: str,
-    html_content: str,
-) -> tuple[str, str]:
-    """Variant C: Stripped test with comments + HTML page content."""
-    # Truncate HTML if too large (keep first 8000 chars)
-    if len(html_content) > 8000:
-        html_content = html_content[:8000] + "\n<!-- ... truncated ... -->"
-
-    user = f"""Complete the following Selenium test by writing the missing assertion(s) where the TODO comment is.
-Descriptive comments have been added to explain what the assertion should check.
-The HTML content of the web page at the point of assertion is also provided.
-
-Test code:
-```java
-{variant_c_source}
-```
-
-HTML page content at the assertion point:
-```html
-{html_content}
-```"""
-    return SYSTEM_PROMPT, user
-
-
-def build_prompt_d(
-    record: TestRecord,
-    variant_d_source: str,
-    html_content: str | None,
-    strings_source: str,
-) -> tuple[str, str]:
-    """Variant D: Test with comments + HTML + full project source (Strings.java)."""
-    user = f"""Complete the following Selenium test by writing the missing assertion(s) where the TODO comment is.
-Descriptive comments have been added to explain what the assertion should check.
-The HTML content of the web page and the project's utility constants (Strings.java) are also provided.
-
-Test code:
-```java
-{variant_d_source}
-```"""
-
-    if html_content:
-        if len(html_content) > 8000:
-            html_content = html_content[:8000] + "\n<!-- ... truncated ... -->"
-        user += f"""
-
-HTML page content at the assertion point:
-```html
-{html_content}
-```"""
-
-    user += f"""
-
-Project constants (Strings.java):
-```java
-{strings_source}
-```"""
-
-    return SYSTEM_PROMPT, user
-
-
-def build_prompt_with_page_objects(
-    base_prompt: tuple[str, str],
-    page_object_sources: dict[str, str],
-) -> tuple[str, str]:
-    """Enhance a prompt by including relevant Page Object source code."""
-    system, user = base_prompt
-
-    if not page_object_sources:
-        return system, user
-
-    po_section = "\n\nRelevant Page Object classes:\n"
-    for class_name, source in page_object_sources.items():
-        po_section += f"\n--- {class_name}.java ---\n```java\n{source}\n```\n"
-
-    return system, user + po_section
 
 
 def build_assertion_prompt(
@@ -250,15 +150,22 @@ def build_assertion_prompt(
             "Descriptive comments have been added to explain what the "
             "assertion should check."
         )
+    placeholders = variant_source.count(PLACEHOLDER)
+    if placeholders > 1:
+        intro.append(
+            f"The test has {placeholders} placeholders, numbered (1) to ({placeholders}). "
+            "Write the assertion(s) for each placeholder, and start each group with a "
+            "line containing only its marker, e.g. `// (1)`."
+        )
 
     user = "\n".join(intro) + f"\n\nTest code:\n```java\n{variant_source}\n```"
 
     if html_content:
-        if len(html_content) > 8000:
-            html_content = html_content[:8000] + "\n<!-- ... truncated ... -->"
+        # The whole page, cleaned (see variants/html_clean.py) — never cut, so
+        # content far down a large page stays visible to the model.
         user += (
             "\n\nHTML page content at the assertion point:\n"
-            f"```html\n{html_content}\n```"
+            f"```html\n{clean_html(html_content)}\n```"
         )
 
     if strings_source:

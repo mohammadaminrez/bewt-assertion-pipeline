@@ -5,6 +5,13 @@ apps:
     base_url: "http://localhost:8080"
     variant: "baseline"
     docker_compose: null  # Set path to docker-compose.yml
+    # Fresh-app container and the directory holding all app state, used by
+    # the reference run to snapshot/restore state around each test.
+    docker:
+      image: "bludit/docker:3.13.1"
+      container: "bludit"
+      ports: "8080:80"
+      state_dir: "/usr/share/nginx/html/bl-content"
     credentials:
       username: "admin"
       password: "0f5c3cc1b73dce21d0c5516033185f86"

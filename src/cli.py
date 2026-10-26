@@ -18,7 +18,9 @@ from .parsing.java_parser import parse_all_tests, resolve_strings_constants
 from .parsing.gherkin_parser import parse_all_gherkin
 from .models import ExperimentResult, ErrorCategory
 from .variants.generator import write_variants
-from .variants.html_capture import capture_html_for_app, capture_html_static
+from .variants.html_capture import capture_html_static
+from .execution.reference import ReferenceRunError, build_reference
+from .execution.controls import run_controls
 from .execution.docker_manager import DockerManager
 from .execution.app_setup import run_installer
 from .evaluation.reporter import generate_full_report
@@ -176,31 +178,49 @@ def generate_variants(ctx, app):
     click.echo("\nVariant generation complete.")
 
 
-@main.command()
-@click.option("--app", "-a", multiple=True, help="App(s) to capture HTML for")
+@main.command(name="reference-run")
+@click.option("--app", "-a", required=True, help="App to run the gold suite for")
 @click.pass_context
-def capture_html(ctx, app):
-    """Capture HTML pages from running apps for variant C."""
+def reference_run(ctx, app):
+    """Run the gold suite once on a fresh app: save per-test state snapshots
+    and the HTML at each assertion point (needed for C/D and --execute)."""
     config = ctx.obj["config"]
     _validate_bewt_repo(config)
-    apps = app if app else list(config.apps.keys())
-
-    docker = DockerManager(config)
-
-    # Check requirements upfront
-    warnings = _validate_maven()
-    for w in warnings:
-        click.echo(click.style(f"Warning: {w}", fg="yellow"))
-    if warnings and not click.confirm("Continue anyway?"):
+    if not _validate_app_exists(config, app):
         return
+    click.echo(f"\n=== Reference run for {app} ===")
+    try:
+        reference = build_reference(config, app, log=click.echo)
+    except ReferenceRunError as e:
+        raise click.ClickException(str(e))
+    click.echo(click.style(
+        f"\nAll {len(reference['order'])} gold tests passed; "
+        f"{len(reference['snapshots'])} snapshots and HTML pages saved.", fg="green"))
 
-    for app_name in apps:
-        click.echo(f"\n=== Capturing HTML for {app_name} ===")
-        if not docker.deploy_app(app_name):
-            click.echo(f"  Failed to deploy {app_name}, skipping")
-            continue
-        html_map = capture_html_for_app(config, app_name, on_progress=click.echo)
-        click.echo(f"  Captured {len(html_map)} pages")
+
+@main.command(name="verify-execution")
+@click.option("--app", "-a", required=True, help="App whose execution harness to verify")
+@click.pass_context
+def verify_execution(ctx, app):
+    """Positive/negative controls: gold assertions must pass and their
+    negations must fail when run through the isolated execution path."""
+    config = ctx.obj["config"]
+    click.echo(f"\n=== Execution controls for {app} ===")
+    try:
+        rows = run_controls(config, app, log=click.echo)
+    except ReferenceRunError as e:
+        raise click.ClickException(str(e))
+    bad = [r for r in rows if not (r["positive"]["ok"] and r["negative"]["ok"])]
+    for r in bad:
+        for kind in ("positive", "negative"):
+            if not r[kind]["ok"]:
+                click.echo(f"  {r['class']} {kind}: compiles={r[kind]['compiles']} "
+                           f"passed={r[kind]['passed']} {r[kind]['note']} {r[kind]['message']}")
+    color = "green" if not bad else "red"
+    click.echo(click.style(f"\n{len(rows) - len(bad)}/{len(rows)} tests behave correctly "
+                           "(gold passes, negation fails).", fg=color))
+    if bad:
+        raise SystemExit(1)
 
 
 @main.command()

@@ -26,6 +26,10 @@ class LLMResponse:
     # latency are the original call's (a property of the prompt), but no
     # API request was made, so nothing was spent.
     from_cache: bool = False
+    # Exact model version the provider reports having served (e.g. a dated
+    # snapshot behind an alias like gpt-4o-mini); `model` stays the
+    # configured id used for pricing.
+    served_model: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -46,6 +50,7 @@ class LLMResponse:
             cost_usd=data.get("cost_usd"),
             latency_ms=data.get("latency_ms"),
             from_cache=data.get("from_cache", False),
+            served_model=data.get("served_model"),
         )
 
 
@@ -76,6 +81,7 @@ class LLMCall:
     cost_usd: float | None = None
     latency_ms: int | None = None
     from_cache: bool = False
+    served_model: str | None = None
     id: int | None = None
     created_at: str | None = None
 

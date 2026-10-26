@@ -84,6 +84,7 @@ def _generation_properties(call: LLMCall) -> dict:
         "treatment": call.treatment,
         "source": call.source,
         "prompt_hash": call.prompt_hash,
+        "served_model": call.served_model,
     }
     if call.input_tokens is not None:
         props["$ai_input_tokens"] = call.input_tokens

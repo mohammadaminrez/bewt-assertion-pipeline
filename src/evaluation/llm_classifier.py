@@ -247,6 +247,7 @@ def _build_pre_classification_call(
         cost_usd=response.cost_usd,
         latency_ms=response.latency_ms,
         from_cache=response.from_cache,
+        served_model=response.served_model,
     )
 
 

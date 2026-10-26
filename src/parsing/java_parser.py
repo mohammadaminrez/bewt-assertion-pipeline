@@ -22,6 +22,15 @@ ASSERTION_TYPE_MAP = {
 PLACEHOLDER = "// TODO: Insert the missing assertion here"
 
 
+def placeholder(block: int, block_count: int) -> str:
+    """Placeholder text for assertion position `block` (0-based).
+
+    A test with a single assertion position keeps the plain placeholder; with
+    several, each is numbered so the model's answers can be put back in place.
+    """
+    return PLACEHOLDER if block_count <= 1 else f"{PLACEHOLDER} ({block + 1})"
+
+
 def _find_statement_end(source: str, start: int) -> int:
     """Find the end of a Java statement starting at `start`, handling nested parens."""
     depth = 0
@@ -171,30 +180,48 @@ def extract_assertions(source: str) -> list[AssertionRecord]:
     return assertions
 
 
+def assign_blocks(source: str, assertions: list[AssertionRecord]) -> None:
+    """Group assertions into contiguous blocks (sets `a.block`).
+
+    Assertions separated only by blank lines share a block; any other code in
+    between (e.g. a navigation step) starts a new block.
+    """
+    lines = source.split('\n')
+    ordered = sorted(assertions, key=lambda a: a.start_line)
+    block = 0
+    for prev, cur in zip([None] + ordered, ordered):
+        if prev is not None:
+            between = lines[prev.end_line:cur.start_line - 1]
+            if any(line.strip() for line in between):
+                block += 1
+        cur.block = block
+
+
 def strip_assertions(source: str, assertions: list[AssertionRecord]) -> str:
-    """Remove assertions from source and replace with placeholder."""
+    """Remove assertions, leaving one placeholder per assertion block.
+
+    Call `assign_blocks` first. The placeholder keeps the assertion line's own
+    indentation (tabs or spaces).
+    """
     if not assertions:
         return source
 
     lines = source.split('\n')
-    # Collect all line ranges to remove (0-indexed)
-    lines_to_remove = set()
+    block_count = max(a.block for a in assertions) + 1
+    remove = {}  # 0-based line index -> block
     for a in assertions:
         for ln in range(a.start_line - 1, a.end_line):
-            lines_to_remove.add(ln)
-
-    # Find the first assertion line to insert placeholder
-    first_line = min(a.start_line for a in assertions) - 1
+            remove[ln] = a.block
 
     result = []
-    placeholder_inserted = False
+    placed = set()
     for i, line in enumerate(lines):
-        if i in lines_to_remove:
-            if not placeholder_inserted:
-                # Detect indentation from the assertion line
-                indent = len(line) - len(line.lstrip())
-                result.append(' ' * indent + PLACEHOLDER)
-                placeholder_inserted = True
+        if i in remove:
+            block = remove[i]
+            if block not in placed:
+                indent = line[:len(line) - len(line.lstrip())]
+                result.append(indent + placeholder(block, block_count))
+                placed.add(block)
         else:
             result.append(line)
 
@@ -259,6 +286,7 @@ def parse_test_file(
     if constants:
         resolve_assertion_constants(assertions, constants)
 
+    assign_blocks(source, assertions)
     stripped = strip_assertions(source, assertions)
 
     return TestRecord(

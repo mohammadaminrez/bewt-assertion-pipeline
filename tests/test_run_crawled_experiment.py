@@ -92,7 +92,7 @@ def test_crawled_treatments_control_prompt_context(config, fake_llm):
     assert "// The test" in prompt_b and "```html" not in prompt_b
     assert "// The test" in prompt_c and "```html" in prompt_c
     # Treatment C carries the final state's crawled DOM.
-    assert "<html>state2</html>" in prompt_c
+    assert "<html>\nstate2\n</html>" in prompt_c  # cleaned: one node per line
 
 
 def test_run_crawled_experiment_is_resumable(config, fake_llm):

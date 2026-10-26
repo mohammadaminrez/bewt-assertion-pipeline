@@ -64,6 +64,7 @@ class OpenAIClient:
             cached_input_tokens=_getattr_path(response, "usage", "prompt_tokens_details", "cached_tokens"),
             reasoning_tokens=_getattr_path(response, "usage", "completion_tokens_details", "reasoning_tokens"),
             latency_ms=round((time.perf_counter() - started) * 1000),
+            served_model=getattr(response, "model", None),
         ))
 
 
@@ -100,6 +101,7 @@ class AnthropicClient:
             cache_creation_input_tokens=_getattr_path(response, "usage", "cache_creation_input_tokens"),
             cache_read_input_tokens=_getattr_path(response, "usage", "cache_read_input_tokens"),
             latency_ms=round((time.perf_counter() - started) * 1000),
+            served_model=getattr(response, "model", None),
         ))
 
 
@@ -131,6 +133,7 @@ class GeminiClient:
             cached_input_tokens=_getattr_path(response, "usage_metadata", "cached_content_token_count"),
             reasoning_tokens=_getattr_path(response, "usage_metadata", "thoughts_token_count"),
             latency_ms=round((time.perf_counter() - started) * 1000),
+            served_model=getattr(response, "model_version", None),
         ))
 
 

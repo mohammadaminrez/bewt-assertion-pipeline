@@ -22,7 +22,7 @@ def _config(tmp_path, tests=("AddCategoryTest", "DeletePostTest"), captured=("Ad
     test_dir.mkdir(parents=True)
     for name in tests:
         (test_dir / f"{name}.java").write_text(TEST_SOURCE.format(name=name))
-    html_dir = tmp_path / "output" / "html_capture" / "bludit"
+    html_dir = tmp_path / "output" / "reference" / "bludit" / "html"
     html_dir.mkdir(parents=True)
     for name in captured:
         (html_dir / f"{name}.html").write_text("<html></html>")

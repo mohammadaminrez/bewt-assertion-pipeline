@@ -6,6 +6,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
+def block_marker(block: int) -> str:
+    """Marker line that labels the answer for placeholder `block` (0-based)."""
+    return f"// ({block + 1})"
+
+
 class AssertionType(Enum):
     ASSERT_EQUALS = "assertEquals"
     ASSERT_TRUE = "assertTrue"
@@ -32,6 +37,10 @@ class AssertionRecord:
     expected_value: str | None = None
     actual_expression: str | None = None
     resolved_expected: str | None = None  # If expected was a Strings constant
+    # Index of the contiguous assertion group this belongs to. Assertions
+    # separated by other code form separate groups, each with its own
+    # placeholder in the stripped source.
+    block: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -65,9 +74,24 @@ class TestRecord:
         return len(self.assertions)
 
     @property
+    def block_count(self) -> int:
+        """Number of assertion positions (placeholders) in the stripped source."""
+        return max((a.block for a in self.assertions), default=-1) + 1
+
+    @property
     def gold_standard(self) -> str:
-        """The gold standard assertions as a single string."""
-        return "\n".join(a.full_text for a in self.assertions)
+        """The gold standard assertions as a single string.
+
+        With several assertion positions, each group is preceded by its
+        `// (n)` marker — the same format the model is asked to answer in.
+        """
+        if self.block_count <= 1:
+            return "\n".join(a.full_text for a in self.assertions)
+        lines = []
+        for block in range(self.block_count):
+            lines.append(block_marker(block))
+            lines.extend(a.full_text for a in self.assertions if a.block == block)
+        return "\n".join(lines)
 
     def to_dict(self) -> dict:
         return {

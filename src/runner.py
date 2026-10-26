@@ -9,15 +9,19 @@ from .config import Config
 from .models import ExperimentResult, ErrorCategory
 from .parsing.java_parser import parse_all_tests, resolve_strings_constants
 from .parsing.gherkin_parser import parse_all_gherkin
-from .variants.generator import generate_variant_a, generate_variant_b
+from .variants.generator import generate_variant_a, generate_variant_b, gherkin_comment
 from .variants.html_capture import capture_html_static
 from .llm.client import create_client
 from .llm.prompt_builder import build_assertion_prompt, treatment_ingredients
 from .llm.types import LLMCall, LLMResponse
 from .llm.observability import emit_llm_call, flush_observability
-from .llm.response_parser import extract_assertion_from_response, validate_assertion
-from .execution.java_injector import prepare_project_copy
-from .execution.test_runner import compile_project, run_single_test
+from .llm.response_parser import (
+    extract_assertion_from_response,
+    has_extra_statements,
+    validate_assertion,
+)
+from .execution.java_injector import fill_placeholders
+from .execution.reference import ReferenceRunError, load_reference, run_isolated
 from .evaluation.comparator import classify_error, compute_semantic_similarity, check_exact_match
 from .evaluation.reporter import generate_full_report
 from .data.store import ResultStore
@@ -67,6 +71,7 @@ def _build_generation_call(
         cost_usd=response.cost_usd,
         latency_ms=response.latency_ms,
         from_cache=response.from_cache,
+        served_model=response.served_model,
     )
 
 
@@ -135,7 +140,7 @@ def _check_html_available(
         raise MissingContextError(
             f"Treatment(s) {', '.join(html_treatments)} need the captured HTML page, "
             f"but {len(missing)} test(s) have none:\n  " + "\n  ".join(missing)
-            + "\nRun 'bewt-pipeline capture-html --app <app>' first."
+            + "\nRun 'bewt-pipeline reference-run --app <app>' first."
         )
 
 
@@ -164,6 +169,12 @@ def run_experiment(
     apps = apps or list(config.apps.keys())
     models = models or [config.default_model]
     _check_html_available(config, apps, treatments, limit)
+    if execute:
+        for app_name in apps:
+            try:
+                load_reference(config, app_name)
+            except ReferenceRunError as e:
+                raise MissingContextError(f"--execute needs a reference run: {e}")
 
     total = count_experiments(config, apps, models, treatments, limit=limit)
     store = ResultStore(config.output_dir / "results.db")
@@ -213,10 +224,18 @@ def run_experiment(
                     # then assemble the prompt.
                     ingredients = treatment_ingredients(t)
 
-                    if ingredients.comments:
+                    # A test without a Gherkin specification gets no comment
+                    # (B equals A for it); the prompt then says nothing about
+                    # comments either.
+                    has_spec = gherkin_comment(record, gherkin_map) is not None
+                    include_comments = ingredients.comments and has_spec
+                    if include_comments:
                         variant_source = generate_variant_b(record, gherkin_map)
                     else:
                         variant_source = generate_variant_a(record)
+                    notes = []
+                    if ingredients.comments and not has_spec:
+                        notes.append("no Gherkin spec: prompt has no comment")
 
                     html = None
                     if ingredients.html:
@@ -226,7 +245,7 @@ def run_experiment(
                     system, user = build_assertion_prompt(
                         record,
                         variant_source=variant_source,
-                        include_comments=ingredients.comments,
+                        include_comments=include_comments,
                         html_content=html,
                         strings_source=strings_source if ingredients.project else None,
                         page_object_sources=(
@@ -269,33 +288,35 @@ def run_experiment(
                         prompt=user, raw_response=raw_response,
                         generated_assertion=generated,
                     )
+                    if valid and has_extra_statements(generated):
+                        notes.append("answer contains non-assertion statements")
 
                     if not valid:
                         result.error_category = ErrorCategory.NOT_EXECUTABLE
-                        result.notes = "Generated assertion failed validation"
+                        notes.append("answer contains no assertion call")
                         _progress(t, record.class_name, "invalid")
                     elif not execute:
                         result.exact_match = check_exact_match(generated, record.assertions)
                         result.semantic_similarity = compute_semantic_similarity(
                             generated, record.assertions
                         )
-                        result.notes = "execution skipped"
+                        notes.append("execution skipped")
                         _progress(t, record.class_name, f"sim={result.semantic_similarity:.2f}")
                     else:
-                        work_dir = prepare_project_copy(
-                            config, app_name, record, generated,
-                            variant_source, t, model_name,
+                        filled, fill_note = fill_placeholders(variant_source, generated)
+                        if fill_note:
+                            notes.append(fill_note)
+                        work_dir = config.output_dir / "runs" / app_name / model_name / t / record.class_name
+                        compile_res, test_res = run_isolated(
+                            config, app_name, record.class_name, filled, work_dir,
                         )
-                        compile_res = compile_project(work_dir)
                         result.compiles = compile_res.success
-
-                        if compile_res.success:
-                            test_res = run_single_test(work_dir, record.class_name)
+                        if test_res is not None:
                             result.passes = test_res.passed
                             if test_res.error_message:
-                                result.notes = test_res.error_message[:500]
+                                notes.append(test_res.error_message[:500])
                         else:
-                            result.notes = "; ".join(compile_res.errors[:3])
+                            notes.append("; ".join(compile_res.errors[:3]))
 
                         result.exact_match = check_exact_match(generated, record.assertions)
                         result.semantic_similarity = compute_semantic_similarity(
@@ -309,6 +330,7 @@ def run_experiment(
                         _progress(t, record.class_name,
                                   f"{status}:sim={result.semantic_similarity:.2f},cat={result.error_category.value}")
 
+                    result.notes = " | ".join(notes)
                     experiment_id = store.save_result(result)
                     _save_and_emit_llm_call(store, _build_generation_call(
                         record, t, model_name, system, user, llm_response, experiment_id

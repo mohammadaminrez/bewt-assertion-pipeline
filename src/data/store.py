@@ -6,7 +6,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-from ..models import AssertionRecord, AssertionType, ExperimentResult, ErrorCategory, TestRecord
+from ..models import ExperimentResult, ErrorCategory, TestRecord
+from ..parsing.java_parser import extract_assertions
 from ..llm.types import LLMCall
 
 
@@ -77,6 +78,7 @@ class ResultStore:
                 cost_usd REAL,
                 latency_ms INTEGER,
                 from_cache INTEGER NOT NULL DEFAULT 0,
+                served_model TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(experiment_id) REFERENCES experiments(id)
             );
@@ -207,8 +209,8 @@ class ResultStore:
              system_prompt, user_prompt, prompt_hash, raw_response,
              input_tokens, output_tokens, total_tokens, cached_input_tokens,
              cache_creation_input_tokens, cache_read_input_tokens,
-             reasoning_tokens, cost_usd, latency_ms, from_cache)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             reasoning_tokens, cost_usd, latency_ms, from_cache, served_model)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["experiment_id"], data["call_type"], data["app"], data["class_name"],
             data["method_name"], data["treatment"], data["source"],
@@ -217,7 +219,7 @@ class ResultStore:
             data["input_tokens"], data["output_tokens"], data["total_tokens"],
             data["cached_input_tokens"], data["cache_creation_input_tokens"],
             data["cache_read_input_tokens"], data["reasoning_tokens"], data["cost_usd"],
-            data["latency_ms"], int(data["from_cache"]),
+            data["latency_ms"], int(data["from_cache"]), data["served_model"],
         ))
         self.conn.commit()
         return int(cursor.lastrowid)
@@ -321,18 +323,9 @@ class ResultStore:
         rows = self.get_all_results()
         results = []
         for row in rows:
-            # Build a stub TestRecord with gold_standard parsed back into an AssertionRecord
-            gold_text = row.get("gold_standard", "") or ""
-            assertions = []
-            if gold_text.strip():
-                for line in gold_text.split("\n"):
-                    line = line.strip()
-                    if line:
-                        assertions.append(AssertionRecord(
-                            assertion_type=AssertionType.ASSERT_EQUALS,
-                            full_text=line,
-                            start_line=0, end_line=0,
-                        ))
+            # Rebuild the gold assertions with the same parser that extracted
+            # them, so types and multi-line assertions round-trip exactly.
+            assertions = extract_assertions(row.get("gold_standard", "") or "")
 
             record = TestRecord(
                 app=row["app"], variant=row["variant"], version=row["version"],

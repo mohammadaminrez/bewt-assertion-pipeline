@@ -6,6 +6,14 @@ import re
 from ..models import AssertionRecord, AssertionType, ErrorCategory
 
 
+_MARKER_LINE = re.compile(r"^\s*//\s*\(\d+\)\s*$", re.MULTILINE)
+
+
+def _strip_markers(code: str) -> str:
+    """Drop the `// (n)` placeholder markers; gold assertions carry none."""
+    return _MARKER_LINE.sub("", code)
+
+
 def classify_error(
     generated: str,
     gold_assertions: list[AssertionRecord],
@@ -13,6 +21,7 @@ def classify_error(
     passes: bool,
 ) -> ErrorCategory:
     """Classify the error type of a generated assertion."""
+    generated = _strip_markers(generated)
     if not compiles:
         return ErrorCategory.NOT_EXECUTABLE
 
@@ -50,6 +59,7 @@ def compute_semantic_similarity(
     gold_assertions: list[AssertionRecord],
 ) -> float:
     """Compute semantic similarity between generated and gold assertions (0-1)."""
+    generated = _strip_markers(generated)
     if not generated.strip():
         return 0.0
 
@@ -90,6 +100,7 @@ def compute_semantic_similarity(
 
 def check_exact_match(generated: str, gold_assertions: list[AssertionRecord]) -> bool:
     """Check if the generated assertion exactly matches the gold standard."""
+    generated = _strip_markers(generated)
     gold_text = "\n".join(a.full_text for a in gold_assertions)
     return _normalize(generated) == _normalize(gold_text)
 

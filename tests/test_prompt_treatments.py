@@ -62,10 +62,14 @@ def test_prompt_includes_all_sources_for_full_condition():
     assert "EditProjectPage.java" in user
 
 
-def test_prompt_html_is_truncated_at_8000_chars():
-    big = "x" * 9000
+def test_prompt_html_is_cleaned_and_never_cut():
+    body = "<p>row</p>" * 2000 + '<td id="last">Category001</td>'
+    page = ("<html><head><style>.x{color:red}</style><script>var a=1;</script></head>"
+            f"<body onload=\"go()\" style=\"margin:0\">{body}<!-- note --></body></html>")
     _, user = build_assertion_prompt(
-        _record(), variant_source="// TODO", include_comments=False, html_content=big,
+        _record(), variant_source="// TODO", include_comments=False, html_content=page,
     )
-    assert "... truncated ..." in user
-    assert big not in user
+    assert '<td id="last">' in user and "Category001" in user
+    assert "truncated" not in user
+    for noise in ("<style", "<script", "var a=1", "onload", "margin:0", "<!--"):
+        assert noise not in user
