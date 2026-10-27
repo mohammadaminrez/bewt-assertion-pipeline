@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import csv
 from pathlib import Path
 from dotenv import load_dotenv
@@ -980,5 +982,18 @@ def import_excel(ctx, input_path, source):
     store.close()
 
 
-if __name__ == "__main__":
+def run():
+    """Console entry point. On Windows, re-runs the command in Python's UTF-8
+    mode, so files and tool output are read as UTF-8 instead of the local
+    code page and users need not set PYTHONUTF8 themselves."""
+    if os.name == "nt" and not sys.flags.utf8_mode:
+        code = "from src.cli import main; main(prog_name='bewt-pipeline')"
+        try:
+            sys.exit(subprocess.call([sys.executable, "-X", "utf8", "-c", code, *sys.argv[1:]]))
+        except KeyboardInterrupt:
+            sys.exit(130)
     main()
+
+
+if __name__ == "__main__":
+    run()

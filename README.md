@@ -22,20 +22,20 @@ bewt-pipeline import-excel                      #   (after filling the Excel)
 bewt-pipeline report
 ```
 
-Supported providers: OpenAI, Anthropic (Claude) and Gemini. Switch with
-`--model` (e.g. `gpt-4o-mini`, `claude-haiku`, `gemini-flash`); only that
-provider's key is needed. Models are listed in `config/models.yaml`.
+**Models:** OpenAI, Anthropic and Gemini. Choose one with `--model`
+(`gpt-4o-mini`, `claude-haiku`, `gemini-flash`, …); only its provider's key
+is needed. All models are in `config/models.yaml`.
 
 ## Apps and systems
 
-Apps: `bludit`, `joomla`, `mantisbt`, `claroline`, `kanboard`. Not set up:
-`expresscart`, `mediawiki`, `prestashop` (their gold tests fail on macOS).
+**Apps:** `bludit`, `joomla`, `mantisbt`, `claroline`, `kanboard`.
+`expresscart`, `mediawiki` and `prestashop` are not set up (their gold tests
+fail on macOS).
 
-Verified on macOS (Apple Silicon, Docker Desktop). Intel Macs, Linux and
-Windows should work but are untested. Gold tests depend on the machine
-(window size, keyboard, speed), so on every new machine `reference-run` and
-`verify-execution` must pass for an app before its results count.
+**Systems:** tested on macOS (Apple Silicon, Docker Desktop); Linux and
+Windows should work but are untested. Gold tests depend on the machine, so
+`reference-run` and `verify-execution` must pass on each new machine.
 
-- Windows: set `PYTHONUTF8=1`; activate with `.venv\Scripts\activate`.
-- Apps sharing a port run one at a time: joomla/claroline (3000),
-  bludit/kanboard (8080). The harness stops the other app's container.
+- Windows: activate with `.venv\Scripts\activate`.
+- joomla/claroline (port 3000) and bludit/kanboard (8080) share ports and run
+  one at a time; the harness stops the other app.
