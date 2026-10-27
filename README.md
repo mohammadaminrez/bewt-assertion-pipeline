@@ -22,6 +22,10 @@ bewt-pipeline import-excel                      #   (after filling the Excel)
 bewt-pipeline report
 ```
 
+Supported providers: OpenAI, Anthropic (Claude) and Gemini. Switch with
+`--model` (e.g. `gpt-4o-mini`, `claude-haiku`, `gemini-flash`); only that
+provider's key is needed. Models are listed in `config/models.yaml`.
+
 ## Apps and systems
 
 Apps: `bludit`, `joomla`, `mantisbt`, `claroline`, `kanboard`. Not set up:

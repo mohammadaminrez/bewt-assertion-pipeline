@@ -27,6 +27,14 @@ models:
     max_tokens: 1024
     api_key_env: "ANTHROPIC_API_KEY"
 
+  gemini-flash:
+    provider: "gemini"
+    model_id: "gemini-2.5-flash"
+    temperature: 0.0
+    # Thinking tokens count against this limit, so it is higher than the others.
+    max_tokens: 8192
+    api_key_env: "GEMINI_API_KEY"
+
 default_model: "gpt-4o"
 retry_attempts: 3
 retry_delay_seconds: 5
