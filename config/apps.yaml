@@ -19,9 +19,19 @@ apps:
   claroline:
     versions:
       - "1.11.10"
-    base_url: "http://localhost:8080"
+    base_url: "http://localhost:3000"
     variant: "baseline"
     docker_compose: null
+    # Installed Claroline with MySQL in the same container (amd64 only).
+    # State = the site files (courses, config) + the database.
+    docker:
+      image: "olianasd/claroline-strongpsw"
+      platform: "linux/amd64"
+      container: "claroline"
+      ports: "3000:80"
+      state_dir: "/var/www/html/claroline11110"
+      mysql_password: "root"
+      mysql_database: "claroline"
     credentials:
       username: "admin"
       password: "admin"

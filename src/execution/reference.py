@@ -25,6 +25,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Callable
 
@@ -91,6 +92,18 @@ def _wait_for_mysql(docker: dict, timeout: float = 120.0) -> None:
     raise ReferenceRunError(f"Database did not answer within {timeout:.0f}s")
 
 
+def _free_port(url: str) -> None:
+    """Stop containers of other apps that hold the app's host port. BEWT
+    suites hard-code their URL, so apps sharing a port (Joomla, Claroline,
+    ExpressCart: 3000) cannot run side by side; their state lives in
+    snapshots, and a stopped container is recreated when needed."""
+    port = urlparse(url).port or 80
+    held = subprocess.run(["docker", "ps", "-q", "--filter", f"publish={port}"],
+                          capture_output=True, text=True).stdout.split()
+    if held:
+        subprocess.run(["docker", "stop", *held], capture_output=True)
+
+
 def reset_app(config: Config, app: str) -> None:
     """Destroy the app's container(s) and create fresh ones from the images."""
     docker = _docker(config, app)
@@ -98,9 +111,11 @@ def reset_app(config: Config, app: str) -> None:
         compose = ["docker", "compose", "-f", str(config.get_app_project_path(app) / docker["compose_file"]),
                    "-p", app]
         subprocess.run(compose + ["down", "-v"], capture_output=True)
+        _free_port(config.apps[app]["base_url"])
         subprocess.run(compose + ["up", "-d"], capture_output=True, text=True, check=True)
     else:
         subprocess.run(["docker", "rm", "-f", docker["container"]], capture_output=True)
+        _free_port(config.apps[app]["base_url"])
         cmd = ["docker", "run", "-d", "--name", docker["container"], "-p", docker["ports"]]
         if docker.get("platform"):
             cmd += ["--platform", docker["platform"]]
