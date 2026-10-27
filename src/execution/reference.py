@@ -114,7 +114,7 @@ def reset_app(config: Config, app: str) -> None:
         _free_port(config.apps[app]["base_url"])
         subprocess.run(compose + ["up", "-d"], capture_output=True, text=True, check=True)
     else:
-        subprocess.run(["docker", "rm", "-f", docker["container"]], capture_output=True)
+        subprocess.run(["docker", "rm", "-fv", docker["container"]], capture_output=True)
         _free_port(config.apps[app]["base_url"])
         cmd = ["docker", "run", "-d", "--name", docker["container"], "-p", docker["ports"]]
         if docker.get("platform"):
@@ -166,7 +166,10 @@ def snapshot_state(config: Config, app: str, dest: Path) -> None:
 def restore_state(config: Config, app: str, snapshot: Path) -> None:
     docker = _docker(config, app)
     state = Path(docker["state_dir"])
-    subprocess.run(["docker", "exec", docker["container"], "rm", "-rf", str(state)], check=True)
+    # Empty the directory rather than remove it: it may be a volume mount
+    # point (Kanboard), which cannot be removed.
+    subprocess.run(["docker", "exec", docker["container"], "sh", "-c",
+                    'rm -rf "$1"/* "$1"/.[!.]* "$1"/..?*', "sh", str(state)], check=True)
     with snapshot.open("rb") as src:
         subprocess.run(
             ["docker", "exec", "-i", docker["container"], "tar", "-C", str(state.parent), "-xf", "-"],

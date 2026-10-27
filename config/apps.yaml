@@ -75,6 +75,12 @@ apps:
     base_url: "http://localhost:8080"
     variant: "baseline"
     docker_compose: null
+    # Official image (arm64 native); all state is the SQLite database.
+    docker:
+      image: "kanboard/kanboard:v1.2.15"
+      container: "kanboard"
+      ports: "8080:80"
+      state_dir: "/var/www/app/data"
     credentials:
       username: "admin"
       password: "admin"
