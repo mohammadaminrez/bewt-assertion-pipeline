@@ -70,35 +70,67 @@ def _wait_for_http(url: str, timeout: float = 120.0) -> None:
     raise ReferenceRunError(f"App did not answer at {url} within {timeout:.0f}s")
 
 
+def _mysql(docker: dict, tool: str, *args: str) -> list[str]:
+    """`docker exec` command running `mysql` or `mysqldump` as root in the
+    database container (MariaDB 11 images only ship the mariadb* names)."""
+    password = ["-e", f"MYSQL_PWD={docker['mysql_password']}"] if docker.get("mysql_password") else []
+    mariadb = {"mysql": "mariadb", "mysqldump": "mariadb-dump"}[tool]
+    script = f'exec "$(command -v {tool} || command -v {mariadb})" -uroot "$@"'
+    return ["docker", "exec", "-i", *password, docker.get("mysql_container", docker["container"]),
+            "sh", "-c", script, tool, *args]
+
+
+def _wait_for_mysql(docker: dict, timeout: float = 120.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ready = subprocess.run(_mysql(docker, "mysql", "-e", "SELECT 1"),
+                               stdin=subprocess.DEVNULL, capture_output=True)
+        if ready.returncode == 0:
+            return
+        time.sleep(1)
+    raise ReferenceRunError(f"Database did not answer within {timeout:.0f}s")
+
+
 def reset_app(config: Config, app: str) -> None:
-    """Destroy the app container and create a fresh one from the image."""
+    """Destroy the app's container(s) and create fresh ones from the images."""
     docker = _docker(config, app)
-    subprocess.run(["docker", "rm", "-f", docker["container"]], capture_output=True)
-    cmd = ["docker", "run", "-d", "--name", docker["container"], "-p", docker["ports"]]
-    if docker.get("platform"):
-        cmd += ["--platform", docker["platform"]]
-    cmd.append(docker["image"])
-    if docker.get("command"):
-        cmd += ["sh", "-c", docker["command"]]
-    subprocess.run(cmd, capture_output=True, text=True, check=True)
+    if docker.get("compose_file"):
+        compose = ["docker", "compose", "-f", str(config.get_app_project_path(app) / docker["compose_file"]),
+                   "-p", app]
+        subprocess.run(compose + ["down", "-v"], capture_output=True)
+        subprocess.run(compose + ["up", "-d"], capture_output=True, text=True, check=True)
+    else:
+        subprocess.run(["docker", "rm", "-f", docker["container"]], capture_output=True)
+        cmd = ["docker", "run", "-d", "--name", docker["container"], "-p", docker["ports"]]
+        if docker.get("platform"):
+            cmd += ["--platform", docker["platform"]]
+        cmd.append(docker["image"])
+        if docker.get("command"):
+            cmd += ["sh", "-c", docker["command"]]
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
     _wait_for_http(config.apps[app]["base_url"])
+    if docker.get("mysql_database"):
+        _wait_for_mysql(docker)
 
 
 def ensure_app_running(config: Config, app: str) -> None:
     """Create the container if it is missing or stopped. Its state is always
     restored from a snapshot before use, so a fresh container is fine."""
     docker = _docker(config, app)
-    state = subprocess.run(
-        ["docker", "inspect", "-f", "{{.State.Running}}", docker["container"]],
-        capture_output=True, text=True,
-    )
-    if state.stdout.strip() != "true":
-        reset_app(config, app)
+    containers = [docker["container"]] + ([docker["mysql_container"]] if docker.get("mysql_container") else [])
+    for container in containers:
+        state = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container],
+            capture_output=True, text=True,
+        )
+        if state.stdout.strip() != "true":
+            reset_app(config, app)
+            return
 
 
 def snapshot_state(config: Config, app: str, dest: Path) -> None:
     """Save the state directory as `dest` (.tar) and, for apps with a MySQL
-    database in the container, a dump of it next to it (.sql)."""
+    database, a dump of it next to it (.sql)."""
     docker = _docker(config, app)
     state = Path(docker["state_dir"])
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -110,9 +142,9 @@ def snapshot_state(config: Config, app: str, dest: Path) -> None:
     if docker.get("mysql_database"):
         with dest.with_suffix(".sql").open("wb") as out:
             subprocess.run(
-                ["docker", "exec", docker["container"], "mysqldump", "-uroot", "--single-transaction",
-                 "--routines", "--triggers", docker["mysql_database"]],
-                stdout=out, check=True,
+                _mysql(docker, "mysqldump", "--single-transaction", "--routines", "--triggers",
+                       docker["mysql_database"]),
+                stdin=subprocess.DEVNULL, stdout=out, check=True,
             )
 
 
@@ -128,15 +160,11 @@ def restore_state(config: Config, app: str, snapshot: Path) -> None:
     database = docker.get("mysql_database")
     if database:
         subprocess.run(
-            ["docker", "exec", docker["container"], "mysql", "-uroot", "-e",
-             f"DROP DATABASE IF EXISTS `{database}`; CREATE DATABASE `{database}`"],
-            check=True,
+            _mysql(docker, "mysql", "-e", f"DROP DATABASE IF EXISTS `{database}`; CREATE DATABASE `{database}`"),
+            stdin=subprocess.DEVNULL, check=True,
         )
         with snapshot.with_suffix(".sql").open("rb") as src:
-            subprocess.run(
-                ["docker", "exec", "-i", docker["container"], "mysql", "-uroot", database],
-                stdin=src, check=True,
-            )
+            subprocess.run(_mysql(docker, "mysql", database), stdin=src, check=True)
 
 
 # --- Java project ------------------------------------------------------------
@@ -230,6 +258,11 @@ def build_reference(config: Config, app: str, log: Log = print) -> dict:
     package = config.get_app_test_path(app).name
     test_dir = project / "src" / "test" / "java" / package
     order = suite_order(test_dir)
+    setup = config.apps[app].get("setup_class")
+    if setup and setup not in order:
+        # Installer kept outside TestSuite (MantisBT): it runs first, like
+        # Bludit's in-suite Installer.
+        order = [setup] + order
     records = {r.class_name: r for r in parse_all_tests(test_dir, app, "", "")}
 
     # Instrumented copies capture the page right after the first gold
@@ -280,7 +313,7 @@ def build_reference(config: Config, app: str, log: Log = print) -> dict:
 
     reference = {
         "app": app,
-        "image": _docker(config, app)["image"],
+        "image": _docker(config, app).get("image") or _docker(config, app)["compose_file"],
         "package": package,
         "order": order,
         "snapshots": snapshots,

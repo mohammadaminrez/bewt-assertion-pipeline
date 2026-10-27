@@ -75,6 +75,17 @@ apps:
     base_url: "http://localhost:8989"
     variant: "baseline"
     docker_compose: null
+    # BEWT's docker-compose.yml (app + MariaDB). The benchmark's Installer,
+    # kept outside TestSuite, runs the install wizard and sets the admin
+    # password. State = the generated config + the database.
+    setup_class: "Installer"
+    docker:
+      compose_file: "docker-compose.yml"
+      container: "mantisbt-mantisbt-1"
+      state_dir: "/var/www/html/config"
+      mysql_container: "mantisbt-mysql-1"
+      mysql_password: "e2eW3Bt3s71nGB3nchM4rK"
+      mysql_database: "bugtracker"
     credentials:
       username: "administrator"
       password: "root"
