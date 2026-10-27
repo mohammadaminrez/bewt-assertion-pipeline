@@ -34,6 +34,8 @@ from ..llm.prompt_builder import CRAWLED_TREATMENT
 from ..llm.response_parser import has_extra_statements, validate_assertion
 from .java_injector import ensure_assert_imports, fill_placeholders
 from .reference import (
+    classpath_of,
+    mvn,
     ReferenceRunError,
     _install_with_dante,
     load_reference,
@@ -165,12 +167,12 @@ def generate_suite(config: Config, app: str, model: str, run: int = 1, log: Log 
 
     # 3. the whole suite, in crawl order, on a freshly installed app
     env = _toolchain_env()
-    for cmd in (["mvn", "-q", "compile"],
-                ["mvn", "-q", "dependency:build-classpath", "-Dmdep.outputFile=classpath.txt"]):
+    for cmd in ([mvn(), "-q", "compile"],
+                [mvn(), "-q", "dependency:build-classpath", "-Dmdep.outputFile=classpath.txt"]):
         result = subprocess.run(cmd, cwd=str(project), capture_output=True, text=True, timeout=900, env=env)
         if result.returncode != 0:
             raise ReferenceRunError(f"{' '.join(cmd)} failed:\n{(result.stdout + result.stderr)[-2000:]}")
-    classpath = f"{project / 'target' / 'classes'}:{(project / 'classpath.txt').read_text().strip()}"
+    classpath = classpath_of(project / "target" / "classes", (project / "classpath.txt").read_text().strip())
     log("  Installing a fresh app container and running the enriched suite...")
     _install_with_dante(config, app)
     suite_run = run_junit(classpath, f"tests.{SUITE_CLASS}", timeout=3600, env=env, cwd=project)

@@ -19,6 +19,7 @@ therefore depends on the assertion alone, never on what ran before it.
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -36,6 +37,17 @@ from .java_injector import ensure_assert_imports, fix_java_version, localize_bas
 from .test_runner import CompileResult, TestResult
 
 Log = Callable[[str], None]
+
+
+def classpath_of(*parts) -> str:
+    """Java classpath from its entries, with the OS separator (; on Windows)."""
+    return os.pathsep.join(str(p) for p in parts)
+
+
+def mvn() -> str:
+    """The Maven executable (mvn.cmd on Windows, which subprocess does not
+    find by the bare name)."""
+    return shutil.which("mvn") or "mvn"
 
 
 class ReferenceRunError(RuntimeError):
@@ -205,13 +217,13 @@ def _prepare_project(config: Config, app: str, dest: Path, log: Log) -> str:
         log(f"  base URL localized in {changed.name}")
     fix_java_version(dest)
 
-    for cmd in (["mvn", "-q", "test-compile"],
-                ["mvn", "-q", "dependency:build-classpath", "-Dmdep.outputFile=classpath.txt"]):
+    for cmd in ([mvn(), "-q", "test-compile"],
+                [mvn(), "-q", "dependency:build-classpath", "-Dmdep.outputFile=classpath.txt"]):
         result = subprocess.run(cmd, cwd=str(dest), capture_output=True, text=True, timeout=900)
         if result.returncode != 0:
             raise ReferenceRunError(f"{' '.join(cmd)} failed:\n{(result.stdout + result.stderr)[-2000:]}")
     deps = (dest / "classpath.txt").read_text().strip()
-    return f"{dest / 'target' / 'test-classes'}:{dest / 'target' / 'classes'}:{deps}"
+    return classpath_of(dest / "target" / "test-classes", dest / "target" / "classes", deps)
 
 
 def compile_java(sources: list[Path], out_dir: Path, classpath: str,
@@ -255,7 +267,7 @@ def run_junit(classpath: str, fqcn: str, timeout: int = 300, env: dict | None = 
 
 def _capture_statement(html_path: Path) -> str:
     return (
-        "try { java.nio.file.Files.write(java.nio.file.Paths.get(\"" + str(html_path) + "\"), "
+        "try { java.nio.file.Files.write(java.nio.file.Paths.get(\"" + html_path.as_posix() + "\"), "
         "driver.getPageSource().getBytes(java.nio.charset.StandardCharsets.UTF_8)); } "
         "catch (java.io.IOException captureError) { throw new RuntimeException(captureError); }"
     )
@@ -315,7 +327,7 @@ def build_reference(config: Config, app: str, log: Log = print) -> dict:
         snapshot_state(config, app, root / "snapshots" / snapshots[0])
         start = 1
     for index, name in enumerate(order[start:], start):
-        result = run_junit(f"{instr_classes}:{classpath}", f"{package}.{name}")
+        result = run_junit(classpath_of(instr_classes, classpath), f"{package}.{name}")
         results.append({"class": name, "passed": result.passed, "seconds": result.time_seconds,
                          "message": result.error_message})
         if not result.passed:
@@ -390,7 +402,7 @@ def run_isolated(
     before = reference["snapshots"][order.index(class_name) - 1]
     ensure_app_running(config, app)
     restore_state(config, app, reference_dir(config, app, source) / "snapshots" / before)
-    result = run_junit(f"{work_dir / 'classes'}:{reference['classpath']}", f"{package}.{class_name}",
+    result = run_junit(classpath_of(work_dir / "classes", reference["classpath"]), f"{package}.{class_name}",
                        env=env, cwd=reference.get("workdir"))
     return compiled, result
 
@@ -429,12 +441,12 @@ def build_crawled_reference(config: Config, app: str, log: Log = print) -> dict:
     project = root / "project"
     shutil.copytree(config.get_dante_testsuite_project_path(app), project,
                     ignore=shutil.ignore_patterns("target", "coverage-reports", "all-coverage-reports"))
-    for cmd in (["mvn", "-q", "compile"],
-                ["mvn", "-q", "dependency:build-classpath", "-Dmdep.outputFile=classpath.txt"]):
+    for cmd in ([mvn(), "-q", "compile"],
+                [mvn(), "-q", "dependency:build-classpath", "-Dmdep.outputFile=classpath.txt"]):
         result = subprocess.run(cmd, cwd=str(project), capture_output=True, text=True, timeout=900, env=env)
         if result.returncode != 0:
             raise ReferenceRunError(f"{' '.join(cmd)} failed:\n{(result.stdout + result.stderr)[-2000:]}")
-    classpath = f"{project / 'target' / 'classes'}:{(project / 'classpath.txt').read_text().strip()}"
+    classpath = classpath_of(project / "target" / "classes", (project / "classpath.txt").read_text().strip())
 
     crawled = ingest_dante_suite(app, config.get_dante_suite_path(app), config.output_dir / "crawled" / app)
     order = [t.class_name for t in sorted(crawled, key=lambda t: int(re.sub(r"\D", "", t.method_name)))]
@@ -464,7 +476,7 @@ def build_crawled_reference(config: Config, app: str, log: Log = print) -> dict:
     for index, name in enumerate(order, 1):
         # DANTE's generated Properties read src/main/resources/app.properties
         # relative to the working directory.
-        result = run_junit(f"{instr_classes}:{classpath}", f"tests.{name}", env=env, cwd=project)
+        result = run_junit(classpath_of(instr_classes, classpath), f"tests.{name}", env=env, cwd=project)
         results.append({"class": name, "passed": result.passed, "seconds": result.time_seconds,
                         "message": result.error_message})
         if not result.passed:
