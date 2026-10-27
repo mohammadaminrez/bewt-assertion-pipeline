@@ -41,9 +41,20 @@ apps:
   joomla:
     versions:
       - "4.2.0"
-    base_url: "http://localhost:8080"
+    base_url: "http://localhost:3000"
     variant: "baseline"
     docker_compose: null
+    # Installed Joomla with MySQL in the same container (amd64 only). State =
+    # the site files + the database. The image ships a stale apache2.pid
+    # that makes Apache exit at boot, so it is removed first.
+    docker:
+      image: "olianasd/joomla4stile"
+      platform: "linux/amd64"
+      container: "joomla"
+      ports: "3000:80"
+      command: "rm -f /var/run/apache2/apache2.pid && exec /run.sh"
+      state_dir: "/app"
+      mysql_database: "joomla_db"
     credentials:
       username: "admin"
       password: "admin"

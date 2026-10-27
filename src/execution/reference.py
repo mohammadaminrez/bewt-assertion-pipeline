@@ -7,8 +7,9 @@ created) and must run in TestSuite order on a fresh app. The reference run
 executes the gold suite once, in that order, on a freshly created container
 and records, after every test:
 
-- ``snapshots/NN_<Class>.tar`` — the app's whole state directory
-  (``00`` = after the Installer);
+- ``snapshots/NN_<Class>.tar`` — the app's whole state directory, plus a
+  ``.sql`` dump for apps whose database lives in the container (``00`` =
+  after the Installer, or the fresh container if the suite has none);
 - ``html/<Class>.html`` — the page source right after the test's first gold
   assertion group passed (the treatment C/D context).
 
@@ -70,13 +71,16 @@ def _wait_for_http(url: str, timeout: float = 120.0) -> None:
 
 
 def reset_app(config: Config, app: str) -> None:
-    """Destroy the app container and create a fresh, uninstalled one."""
+    """Destroy the app container and create a fresh one from the image."""
     docker = _docker(config, app)
     subprocess.run(["docker", "rm", "-f", docker["container"]], capture_output=True)
-    subprocess.run(
-        ["docker", "run", "-d", "--name", docker["container"], "-p", docker["ports"], docker["image"]],
-        capture_output=True, text=True, check=True,
-    )
+    cmd = ["docker", "run", "-d", "--name", docker["container"], "-p", docker["ports"]]
+    if docker.get("platform"):
+        cmd += ["--platform", docker["platform"]]
+    cmd.append(docker["image"])
+    if docker.get("command"):
+        cmd += ["sh", "-c", docker["command"]]
+    subprocess.run(cmd, capture_output=True, text=True, check=True)
     _wait_for_http(config.apps[app]["base_url"])
 
 
@@ -93,6 +97,8 @@ def ensure_app_running(config: Config, app: str) -> None:
 
 
 def snapshot_state(config: Config, app: str, dest: Path) -> None:
+    """Save the state directory as `dest` (.tar) and, for apps with a MySQL
+    database in the container, a dump of it next to it (.sql)."""
     docker = _docker(config, app)
     state = Path(docker["state_dir"])
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +107,13 @@ def snapshot_state(config: Config, app: str, dest: Path) -> None:
             ["docker", "exec", docker["container"], "tar", "-C", str(state.parent), "-cf", "-", state.name],
             stdout=out, check=True,
         )
+    if docker.get("mysql_database"):
+        with dest.with_suffix(".sql").open("wb") as out:
+            subprocess.run(
+                ["docker", "exec", docker["container"], "mysqldump", "-uroot", "--single-transaction",
+                 "--routines", "--triggers", docker["mysql_database"]],
+                stdout=out, check=True,
+            )
 
 
 def restore_state(config: Config, app: str, snapshot: Path) -> None:
@@ -112,6 +125,18 @@ def restore_state(config: Config, app: str, snapshot: Path) -> None:
             ["docker", "exec", "-i", docker["container"], "tar", "-C", str(state.parent), "-xf", "-"],
             stdin=src, check=True,
         )
+    database = docker.get("mysql_database")
+    if database:
+        subprocess.run(
+            ["docker", "exec", docker["container"], "mysql", "-uroot", "-e",
+             f"DROP DATABASE IF EXISTS `{database}`; CREATE DATABASE `{database}`"],
+            check=True,
+        )
+        with snapshot.with_suffix(".sql").open("rb") as src:
+            subprocess.run(
+                ["docker", "exec", "-i", docker["container"], "mysql", "-uroot", database],
+                stdin=src, check=True,
+            )
 
 
 # --- Java project ------------------------------------------------------------
@@ -229,7 +254,16 @@ def build_reference(config: Config, app: str, log: Log = print) -> dict:
     reset_app(config, app)
 
     results, snapshots = [], []
-    for index, name in enumerate(order):
+    start = 0
+    if order[0] in records:
+        # No setup class (e.g. Joomla's image comes installed): the first
+        # suite class is already a test, and the state before it is the
+        # fresh container.
+        order = ["(fresh)"] + order
+        snapshots.append("00_fresh.tar")
+        snapshot_state(config, app, root / "snapshots" / snapshots[0])
+        start = 1
+    for index, name in enumerate(order[start:], start):
         result = run_junit(f"{instr_classes}:{classpath}", f"{package}.{name}")
         results.append({"class": name, "passed": result.passed, "seconds": result.time_seconds,
                          "message": result.error_message})
