@@ -23,19 +23,16 @@ bewt-pipeline report
 ```
 
 **Models:** OpenAI, Anthropic and Gemini. Choose one with `--model`
-(`gpt-4o-mini`, `claude-haiku`, `gemini-flash`, …); only its provider's key
-is needed. All models are in `config/models.yaml`.
+(`gpt-4o-mini`, `claude-haiku`, `gemini-flash`, …).
 
 ## Apps and systems
 
 **Apps:** `bludit`, `joomla`, `mantisbt`, `claroline`, `kanboard`.
+
 `expresscart`, `mediawiki` and `prestashop` are not set up (their gold tests
 fail on macOS).
 
-**Systems:** tested on macOS (Apple Silicon, Docker Desktop); Linux and
-Windows should work but are untested. Gold tests depend on the machine, so
-`reference-run` and `verify-execution` must pass on each new machine.
+**Systems:** gold tests depend on the machine, so `reference-run` and
+`verify-execution` must pass on each new machine.
 
 - Windows: activate with `.venv\Scripts\activate`.
-- joomla/claroline (port 3000) and bludit/kanboard (8080) share ports and run
-  one at a time; the harness stops the other app.
