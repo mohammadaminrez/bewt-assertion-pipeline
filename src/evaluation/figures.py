@@ -41,6 +41,7 @@ ROUND = 4 * PX                # rounded data end
 GAP = 2 * PX                  # gap between stacked segments
 WIDTH_IN = 7.2
 HEADER_IN = {1: 1.05, 2: 1.3}  # title, subtitle and legend band, by legend rows
+NO_SUBTITLE_IN = 0.28          # band saved when a figure has no subtitle
 
 TREATMENTS = {
     "A": "A  test code only",
@@ -86,8 +87,8 @@ def treatments_in(rows):
 
 # --- drawing helpers --------------------------------------------------------
 
-def new_figure(plot_rows_in, legend_rows=1):
-    head = HEADER_IN[legend_rows]
+def new_figure(plot_rows_in, legend_rows=1, subtitle=True):
+    head = HEADER_IN[legend_rows] - (0 if subtitle else NO_SUBTITLE_IN)
     fig = plt.figure(figsize=(WIDTH_IN, head + 0.75 + plot_rows_in), dpi=DPI)
     fig.header_in = head
     fig.patch.set_facecolor(SURFACE)
@@ -134,7 +135,8 @@ def hbar(ax, y, left, width, color, rounded, dx, dy):
 def header(fig, ax, title, subtitle, legend_labels, ncol):
     h = fig.get_figheight()
     fig.text(0.02, 1 - 0.18 / h, title, ha="left", va="top", fontsize=12, color=INK, fontweight="bold")
-    fig.text(0.02, 1 - 0.46 / h, subtitle, ha="left", va="top", fontsize=9, color=INK_2)
+    if subtitle:
+        fig.text(0.02, 1 - 0.46 / h, subtitle, ha="left", va="top", fontsize=9, color=INK_2)
     handles = [plt.Rectangle((0, 0), 1, 1, color=SERIES[i]) for i in range(len(legend_labels))]
     ax.legend(handles, legend_labels, loc="lower left", bbox_to_anchor=(0, 1.0), ncol=ncol,
               frameon=False, fontsize=9, labelcolor=INK_2, handlelength=1, handleheight=1,
@@ -221,7 +223,7 @@ def fig_categories(rows, out_dir, log=print, name="fig2_categories", title=None)
         y += 0.4
     bottom = bars[-1][0]
 
-    fig, ax = new_figure(0.52 * len(bars) + 0.3 * len(models), legend_rows=2)
+    fig, ax = new_figure(0.52 * len(bars) + 0.3 * len(models), legend_rows=2, subtitle=False)
     ax.set_xlim(0, total)
     ax.set_ylim(bottom + 0.7, -0.4)
     ax.set_yticks([b[0] for b in bars], [TREATMENTS.get(t, t) for _, _, t in bars])
@@ -259,7 +261,7 @@ def fig_categories(rows, out_dir, log=print, name="fig2_categories", title=None)
         table.append([MODELS.get(m, m), t] + [c[k] for k in keys])
 
     header(fig, ax, title or "Final category of each generated assertion",
-           "decided by execution; answers that pass but differ from the gold were reviewed manually",
+           None,
            [label for _, label in CATEGORIES], ncol=3)
     save(fig, out_dir, name, ["model", "treatment"] + keys, table, log)
 
