@@ -4,8 +4,9 @@ Written to <output>/reports/figures/ by ``bewt-pipeline report`` (or
 ``python scripts/make_thesis_charts.py``), each as PNG and PDF plus a CSV
 with the numbers it shows (the figure's table view):
 
-  fig1_pass_rate    pass rate per treatment, one bar per model
-  fig2_categories   final category of every answer, per model and treatment
+  fig1_pass_rate          pass rate per treatment, one bar per model
+  fig2_categories         final category of every answer, per model and treatment
+  fig3_categories_<app>   the same, for one app
 
 Only benchmark results (source 'bewt') are used. The final category is the
 manual review label when there is one, else the category from execution.
@@ -48,6 +49,8 @@ TREATMENTS = {
     "D": "D  + Page Objects",
 }
 MODELS = {"gpt-4o-mini": "gpt-4o-mini", "claude-haiku": "Claude Haiku 4.5"}
+APPS = {"bludit": "Bludit 3.13.1", "kanboard": "Kanboard 1.2.15", "joomla": "Joomla 3.10.11",
+        "mantisbt": "MantisBT 1.2.0", "claroline": "Claroline 1.11.10"}
 CATEGORIES = [
     ("correct", "correct"),
     ("over_assertive", "over-assertive"),
@@ -196,9 +199,10 @@ def fig_pass_rate(rows, out_dir, log=print):
          ["model", "treatment", "answers", "passed", "pass_rate"], table, log)
 
 
-def fig_categories(rows, out_dir, log=print):
+def fig_categories(rows, out_dir, log=print, name="fig2_categories", title=None):
     """Final category of every answer: one stacked bar per treatment, the
-    treatments of each model grouped under the model's name."""
+    treatments of each model grouped under the model's name. ``rows`` may be
+    one app's answers only (see write_figures)."""
     models, treatments = models_in(rows), treatments_in(rows)
     keys = [k for k, _ in CATEGORIES]
     counts = {}
@@ -227,8 +231,8 @@ def fig_categories(rows, out_dir, log=print):
     finish_layout(fig)
     dx, dy = data_per_px(ax)
 
-    for yh, name in heads:
-        ax.text(-8 * PX * dx, yh, name, ha="right", va="center", fontsize=10, color=INK,
+    for yh, heading in heads:
+        ax.text(-8 * PX * dx, yh, heading, ha="right", va="center", fontsize=10, color=INK,
                 fontweight="bold", clip_on=False)
     table = []
     for yb, m, t in bars:
@@ -254,10 +258,10 @@ def fig_categories(rows, out_dir, log=print):
             left += n
         table.append([MODELS.get(m, m), t] + [c[k] for k in keys])
 
-    header(fig, ax, "Final category of each generated assertion",
+    header(fig, ax, title or "Final category of each generated assertion",
            "decided by execution; answers that pass but differ from the gold were reviewed manually",
            [label for _, label in CATEGORIES], ncol=3)
-    save(fig, out_dir, "fig2_categories", ["model", "treatment"] + keys, table, log)
+    save(fig, out_dir, name, ["model", "treatment"] + keys, table, log)
 
 
 def write_figures(output_dir: Path, log=print) -> Path | None:
@@ -273,4 +277,12 @@ def write_figures(output_dir: Path, log=print) -> Path | None:
     with plt.rc_context({"font.family": "DejaVu Sans"}):
         fig_pass_rate(rows, out_dir, log)
         fig_categories(rows, out_dir, log)
+        found = {r[2] for r in rows}
+        for app in [a for a in APPS if a in found] + sorted(found - set(APPS)):
+            app_rows = [r for r in rows if r[2] == app]
+            tests = max(sum(1 for r in app_rows if (r[0], r[1]) == key)
+                        for key in {(r[0], r[1]) for r in app_rows})
+            fig_categories(app_rows, out_dir, log, name=f"fig3_categories_{app}",
+                           title=f"Final category of each generated assertion: {APPS.get(app, app)} "
+                                 f"({tests} tests)")
     return out_dir
