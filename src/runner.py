@@ -481,7 +481,7 @@ def run_crawled_experiment(
     if not suite_path.exists():
         raise FileNotFoundError(
             f"DANTE-generated suite not found: {suite_path}\n"
-            f"Run the crawl first (see docs/dante-setup.md)."
+            f"Run the crawl first (see the DANTE section in README.md)."
         )
 
     crawled = ingest_dante_suite(app, suite_path, config.output_dir / "crawled" / app)

@@ -364,7 +364,7 @@ def _run_crawled(config, app, models, execute, limit, runs=1):
     if not suite_path.exists():
         raise click.ClickException(
             f"DANTE-generated suite not found for {app}:\n  {suite_path}\n"
-            f"Run 'bewt-pipeline crawl --app {app}' first (see docs/dante-setup.md)."
+            f"Run 'bewt-pipeline crawl --app {app}' first (see the DANTE section in README.md)."
         )
 
     def on_progress(completed, total_exp, _treatment, class_name, message):
@@ -435,7 +435,7 @@ def crawl(ctx, app, headless, minutes, skip_generate):
     if not (dante_dir / "run-crawling.sh").exists():
         raise click.ClickException(
             f"DANTE not found at {config.dante_repo_path}.\n"
-            f"See docs/dante-setup.md for the toolchain bring-up."
+            f"See the DANTE section in README.md."
         )
 
     from .execution.dante_runner import _toolchain_env, DEFAULT_JAVA_HOME
@@ -443,7 +443,7 @@ def crawl(ctx, app, headless, minutes, skip_generate):
     if not Path(env["JAVA_HOME"], "bin", "java").exists():
         raise click.ClickException(
             f"Pinned JDK 8 not found at {env['JAVA_HOME']} "
-            f"(default: {DEFAULT_JAVA_HOME}).\nSee docs/dante-setup.md, or set DANTE_JAVA_HOME."
+            f"(default: {DEFAULT_JAVA_HOME}).\nSet DANTE_JAVA_HOME to a JDK 8."
         )
 
     headless_flag = "true" if headless else "false"

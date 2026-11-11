@@ -4,7 +4,7 @@ from __future__ import annotations
 
 The DANTE-generated projects target the 2020 toolchain: JDK 8, Maven 3.6,
 Selenium 3.141 + WebDriverManager (ChromeDriver <= 114), so they run with the
-pinned toolchain from docs/dante-setup.md, overridable via the
+pinned toolchain (JDK 8, Maven 3.6.0, Chrome for Testing 114), overridable via the
 DANTE_JAVA_HOME / DANTE_MAVEN_HOME / DANTE_CHROME_BINARY environment variables.
 Crawled answers themselves are executed by execution/reference.py.
 """

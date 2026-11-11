@@ -34,8 +34,8 @@ bewt-pipeline run --app bludit --model claude-haiku --execute
 
 Crawljax/DANTE explores the app and generates Selenium tests without
 assertions; the LLM then writes them. Only `bludit` is set up. Needs DANTE
-next to this repo (`~/dante`) with its toolchain: see
-[docs/dante-setup.md](docs/dante-setup.md).
+next to this repo (`~/dante`):
+https://github.com/matteobiagiola/ICST20-submission-material-DANTE
 
 ```bash
 # 1. Crawl (10 min) + generate DANTE's test project
