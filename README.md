@@ -43,6 +43,8 @@ bewt-pipeline crawl --app bludit
 
 # 2. Optional: the graph page
 python3 scripts/make_crawl_graph.py ~/dante/dante/applications/bludit/localhost/crawl-with-inputs
+cd ~/dante/dante/applications/bludit/localhost/crawl-with-inputs && python3 -m http.server 8765
+# then open http://localhost:8765/graph.html (Ctrl+C stops the server)
 ```
 
 A new crawl overwrites the previous one in `~/dante/dante/applications/bludit/`.
