@@ -43,6 +43,7 @@ crawled as the logged-in admin).
 ```bash
 # 1. Crawl (10 min) + generate DANTE's test project
 bewt-pipeline crawl --app <app>                 # --skip-generate: crawl only
+                                                # --no-headless: watch Chrome crawl
 
 # 2. Optional: the graph page
 python3 scripts/make_crawl_graph.py ~/dante/dante/applications/<app>/localhost/crawl-with-inputs
