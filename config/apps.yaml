@@ -49,25 +49,31 @@ apps:
       user_password: "e2eW3Bt3s71nGB3nchM4rK"
 
   joomla:
+    # 3.10.11, not 4.2.0: BEWT ships one set of Joomla Gherkin specs and it
+    # was written for 3.10.11 (e.g. "Invalid field:  Title", which 4.2.0 no
+    # longer shows), so only this version matches treatment B's comments.
     versions:
-      - "4.2.0"
-    base_url: "http://localhost:3000"
+      - "3.10.11"
+    base_url: "http://localhost:8080"
     variant: "baseline"
     docker_compose: null
-    # Installed Joomla with MySQL in the same container (amd64 only). State =
-    # the site files + the database. The image ships a stale apache2.pid
-    # that makes Apache exit at boot, so it is removed first.
+    # BEWT's docker-compose.yml (joomla:3.10.11 + mysql:5.6). The override in
+    # config/compose/ only runs mysql:5.6 as amd64 (no arm64 build). BEWT's
+    # Installer (install wizard) and RemoveMessages (closes the admin
+    # notices) are kept outside TestSuite and run first, in this order.
+    # State = the site files (incl. configuration.php) + the database.
+    setup_class: ["Installer", "RemoveMessages"]
     docker:
-      image: "olianasd/joomla4stile"
-      platform: "linux/amd64"
-      container: "joomla"
-      ports: "3000:80"
-      command: "rm -f /var/run/apache2/apache2.pid && exec /run.sh"
-      state_dir: "/app"
-      mysql_database: "joomla_db"
+      compose_file: "docker-compose.yml"
+      compose_override: "compose/joomla-3.10.11.override.yml"
+      container: "joomla-joomla-1"
+      state_dir: "/var/www/html"
+      mysql_container: "joomla-joomladb-1"
+      mysql_password: "example"
+      mysql_database: "joomla310"
     credentials:
-      username: "admin"
-      password: "admin"
+      username: "administrator"
+      password: "e2eW3Bt3s71nGB3nchM4rK"
 
   kanboard:
     versions:

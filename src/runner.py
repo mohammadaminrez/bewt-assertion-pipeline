@@ -99,10 +99,9 @@ def count_experiments(
         for app_name in apps:
             test_dir = config.get_app_test_path(app_name)
             if test_dir.exists():
-                n_tests = len([f for f in test_dir.glob("*.java")
-                               if f.stem not in ("BaseTest", "TestSuite", "Installer")])
-                if limit is not None:
-                    n_tests = min(n_tests, limit)
+                # The same tests the run uses: classes with assertions (setup
+                # classes such as Joomla's RemoveMessages have none).
+                n_tests = len(_load_app_records(config, app_name, limit)[0])
                 total += n_tests * len(treatments) * runs
     return total
 

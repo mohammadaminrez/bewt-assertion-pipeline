@@ -120,8 +120,11 @@ def reset_app(config: Config, app: str) -> None:
     """Destroy the app's container(s) and create fresh ones from the images."""
     docker = _docker(config, app)
     if docker.get("compose_file"):
-        compose = ["docker", "compose", "-f", str(config.get_app_project_path(app) / docker["compose_file"]),
-                   "-p", app]
+        compose = ["docker", "compose", "-f", str(config.get_app_project_path(app) / docker["compose_file"])]
+        if docker.get("compose_override"):
+            # Our own additions (e.g. a platform), kept out of BEWT's file.
+            compose += ["-f", str(config.config_dir / docker["compose_override"])]
+        compose += ["-p", app]
         subprocess.run(compose + ["down", "-v"], capture_output=True)
         _free_port(config.apps[app]["base_url"])
         subprocess.run(compose + ["up", "-d"], capture_output=True, text=True, check=True)
@@ -198,6 +201,12 @@ def restore_state(config: Config, app: str, snapshot: Path) -> None:
 
 
 # --- Java project ------------------------------------------------------------
+
+def setup_classes(config: Config, app: str) -> list[str]:
+    """The app's setup classes from config (a name or a list), in run order."""
+    setup = config.apps[app].get("setup_class") or []
+    return [setup] if isinstance(setup, str) else list(setup)
+
 
 def suite_order(test_dir: Path) -> list[str]:
     """Test classes in TestSuite.java's @SuiteClasses order (Installer first)."""
@@ -288,11 +297,10 @@ def build_reference(config: Config, app: str, log: Log = print) -> dict:
     package = config.get_app_test_path(app).name
     test_dir = project / "src" / "test" / "java" / package
     order = suite_order(test_dir)
-    setup = config.apps[app].get("setup_class")
-    if setup and setup not in order:
-        # Installer kept outside TestSuite (MantisBT): it runs first, like
-        # Bludit's in-suite Installer.
-        order = [setup] + order
+    # Setup classes kept outside TestSuite (MantisBT's Installer; Joomla
+    # 3.10.11's Installer + RemoveMessages) run first, like Bludit's in-suite
+    # Installer.
+    order = [s for s in setup_classes(config, app) if s not in order] + order
     records = {r.class_name: r for r in parse_all_tests(test_dir, app, "", "")}
 
     # Instrumented copies capture the page right after the first gold

@@ -128,4 +128,11 @@ def fix_java_version(project_path: Path) -> None:
         f"<maven.compiler.target>{jdk_major}</maven.compiler.target>",
         text,
     )
+    # Some poms (Joomla 3.10.11) set the release instead: only lower it, a
+    # newer JDK compiles an older release fine.
+    text = re.sub(
+        r"<maven\.compiler\.release>(\d+)</maven\.compiler\.release>",
+        lambda m: f"<maven.compiler.release>{min(int(m.group(1)), int(jdk_major))}</maven.compiler.release>",
+        text,
+    )
     pom.write_text(text)

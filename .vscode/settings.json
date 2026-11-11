@@ -1,0 +1,12 @@
+{
+  // The pipeline copies BEWT's Maven projects into output/ and compiles them
+  // itself; if the Java extension imports and builds them too, the two builds
+  // race and Maven can miss the page-object classes.
+  "java.import.exclusions": [
+    "**/node_modules/**",
+    "**/.metadata/**",
+    "**/archetype-resources/**",
+    "**/META-INF/maven/**",
+    "**/output/**"
+  ]
+}

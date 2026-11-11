@@ -1,0 +1,6 @@
+# Merged over BEWT's joomla/baseline/joomla-3.10.11/docker-compose.yml.
+# mysql:5.6 has no arm64 build, so it runs emulated on Apple Silicon;
+# on amd64 machines this changes nothing.
+services:
+  joomladb:
+    platform: linux/amd64
