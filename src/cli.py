@@ -447,8 +447,13 @@ def crawl(ctx, app, headless, minutes, skip_generate):
         )
 
     headless_flag = "true" if headless else "false"
+    # DANTE's scripts start the app container on its fixed port; stop any other
+    # app's container holding it (e.g. Joomla or Kanboard on 8080).
+    from .execution.reference import free_port
+    port_url = config.apps[app]["base_url"]
 
     click.echo(f"=== Crawling {app} with DANTE ({minutes} min, headless={headless_flag}) ===")
+    free_port(port_url)
     result = subprocess.run(
         ["./run-crawling.sh", app, headless_flag, str(minutes)],
         cwd=str(dante_dir), env=env,
@@ -464,6 +469,7 @@ def crawl(ctx, app, headless, minutes, skip_generate):
         return
 
     click.echo(f"\n=== Generating Java test project for {app} ===")
+    free_port(port_url)
     result = subprocess.run(
         ["./generate-java-project-from-crawling.sh", app, headless_flag],
         cwd=str(dante_dir), env=env,

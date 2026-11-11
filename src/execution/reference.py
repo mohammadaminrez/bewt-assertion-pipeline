@@ -104,7 +104,7 @@ def _wait_for_mysql(docker: dict, timeout: float = 120.0) -> None:
     raise ReferenceRunError(f"Database did not answer within {timeout:.0f}s")
 
 
-def _free_port(url: str) -> None:
+def free_port(url: str) -> None:
     """Stop containers of other apps that hold the app's host port. BEWT
     suites hard-code their URL, so apps sharing a port (Joomla, Claroline,
     ExpressCart: 3000) cannot run side by side; their state lives in
@@ -126,11 +126,11 @@ def reset_app(config: Config, app: str) -> None:
             compose += ["-f", str(config.config_dir / docker["compose_override"])]
         compose += ["-p", app]
         subprocess.run(compose + ["down", "-v"], capture_output=True)
-        _free_port(config.apps[app]["base_url"])
+        free_port(config.apps[app]["base_url"])
         subprocess.run(compose + ["up", "-d"], capture_output=True, text=True, check=True)
     else:
         subprocess.run(["docker", "rm", "-fv", docker["container"]], capture_output=True)
-        _free_port(config.apps[app]["base_url"])
+        free_port(config.apps[app]["base_url"])
         cmd = ["docker", "run", "-d", "--name", docker["container"], "-p", docker["ports"]]
         if docker.get("platform"):
             cmd += ["--platform", docker["platform"]]
@@ -433,6 +433,7 @@ def _install_with_dante(config: Config, app: str) -> None:
     docker = _docker(config, app)
     script_dir = config.dante_repo_path / "dante" / "docker" / app
     subprocess.run(["docker", "rm", "-f", docker["container"]], capture_output=True)
+    free_port(config.apps[app]["base_url"])   # DANTE's script binds the port itself
     result = subprocess.run(["./run-docker.sh", "-p", "yes", "-n", docker["container"]],
                             cwd=str(script_dir), capture_output=True, text=True, timeout=300)
     if result.returncode != 0 or "installed and ready" not in result.stdout:
