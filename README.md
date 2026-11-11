@@ -33,21 +33,24 @@ bewt-pipeline run --app bludit --model claude-haiku --execute
 ## DANTE extension (crawled tests)
 
 Crawljax/DANTE explores the app and generates Selenium tests without
-assertions; the LLM then writes them. Only `bludit` is set up. Needs DANTE
-next to this repo (`~/dante`):
+assertions; the LLM then writes them. Needs DANTE next to this repo
+(`~/dante`):
 https://github.com/matteobiagiola/ICST20-submission-material-DANTE
+
+**Apps:** `bludit`, `kanboard`, `joomla`, `mantisbt`, `claroline` (each
+crawled as the logged-in admin).
 
 ```bash
 # 1. Crawl (10 min) + generate DANTE's test project
-bewt-pipeline crawl --app bludit
+bewt-pipeline crawl --app <app>                 # --skip-generate: crawl only
 
 # 2. Optional: the graph page
-python3 scripts/make_crawl_graph.py ~/dante/dante/applications/bludit/localhost/crawl-with-inputs
-cd ~/dante/dante/applications/bludit/localhost/crawl-with-inputs && python3 -m http.server 8765
+python3 scripts/make_crawl_graph.py ~/dante/dante/applications/<app>/localhost/crawl-with-inputs
+cd ~/dante/dante/applications/<app>/localhost/crawl-with-inputs && python3 -m http.server 8765
 # then open http://localhost:8765/graph.html (Ctrl+C stops the server)
 ```
 
-A new crawl overwrites the previous one in `~/dante/dante/applications/bludit/`.
+A new crawl overwrites the previous one in `~/dante/dante/applications/<app>/`.
 
 ## Apps and systems
 
