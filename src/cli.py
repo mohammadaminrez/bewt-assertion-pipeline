@@ -204,7 +204,12 @@ def reference_run(ctx, app, source):
             reference = build_reference(config, app, log=click.echo)
     except ReferenceRunError as e:
         raise click.ClickException(str(e))
-    tests = len(reference["order"]) - 1
+    if source == "crawled":
+        tests = len(reference["order"]) - 1
+    else:
+        # Every test has a captured page; setup classes (one or more) do not.
+        html_dir = config.output_dir / "reference" / app / "html"
+        tests = sum(1 for n in reference["order"] if (html_dir / f"{n}.html").exists())
     click.echo(click.style(
         f"\nAll {tests} tests passed (after setup); {len(reference['snapshots'])} snapshots "
         f"and the HTML at every assertion point saved.", fg="green"))

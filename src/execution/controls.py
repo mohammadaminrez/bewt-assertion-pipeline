@@ -40,7 +40,9 @@ def run_controls(config: Config, app: str, log: Callable[[str], None] = print) -
     test_dir = config.get_app_test_path(app)
     records = {r.class_name: r for r in parse_all_tests(test_dir, app, "", "")}
     rows = []
-    for name in reference["order"][1:]:
+    # The order also holds the setup classes (Installer, Joomla's
+    # RemoveMessages) and "(fresh)"; only classes with assertions are tests.
+    for name in [n for n in reference["order"] if n in records]:
         record = records[name]
         row = {"class": name}
         for kind, answer, expect_pass in (
