@@ -297,6 +297,7 @@ def run_experiment(
     store = ResultStore(config.output_dir / "results.db")
     all_results = []
     completed = 0
+    llm_errors = 0
 
     def _progress(treatment: str, class_name: str, message: str):
         if on_progress:
@@ -368,24 +369,19 @@ def run_experiment(
                         llm_response = llm.generate(system, user)
                         raw_response = llm_response.text
                     except Exception as e:
+                        # An API failure (no credit, rate limit, outage) is not
+                        # an answer: log the call, but save no result, so the
+                        # next run of the same command retries this test.
                         error_response = LLMResponse(
                             text=str(e),
                             provider="",
                             model=model_name,
                         )
-                        result = ExperimentResult(
-                            test_record=record, treatment=t, model=model_name, run=run,
-                            prompt=user, raw_response=str(e),
-                            generated_assertion="",
-                            error_category=ErrorCategory.NOT_EXECUTABLE,
-                            notes=f"LLM error: {e}",
-                        )
-                        experiment_id = store.save_result(result)
                         _save_and_emit_llm_call(store, _build_generation_call(
-                            record, t, model_name, system, user, error_response, experiment_id,
+                            record, t, model_name, system, user, error_response, None,
                             run=run,
                         ))
-                        all_results.append(result)
+                        llm_errors += 1
                         _progress(t, record.class_name, f"error:{e}")
                         continue
 
@@ -442,6 +438,9 @@ def run_experiment(
 
     store.close()
     flush_observability()
+    if llm_errors and on_progress:
+        on_progress(completed, total, "", "",
+                    f"warning:{llm_errors} LLM call(s) failed and were not saved; run the same command again")
     return all_results
 
 
@@ -535,20 +534,13 @@ def run_crawled_experiment(
                 llm_response = llm.generate(system, user)
                 raw_response = llm_response.text
             except Exception as e:
+                # An API failure is not an answer: log it, save no result,
+                # so the next run retries this test.
                 error_response = LLMResponse(text=str(e), provider="", model=model_name)
-                result = ExperimentResult(
-                    test_record=record, treatment=t, model=model_name,
-                    source="crawled", run=run,
-                    prompt=user, raw_response=str(e), generated_assertion="",
-                    error_category=ErrorCategory.NOT_EXECUTABLE,
-                    notes=f"LLM error: {e}",
-                )
-                experiment_id = store.save_result(result)
                 _save_and_emit_llm_call(store, _build_generation_call(
                     record, t, model_name, system, user, error_response,
-                    experiment_id, source="crawled", run=run,
+                    None, source="crawled", run=run,
                 ))
-                all_results.append(result)
                 _progress(t, record.class_name, f"error:{e}")
                 continue
 

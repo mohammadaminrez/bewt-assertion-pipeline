@@ -96,3 +96,20 @@ def test_run_crawled_experiment_is_resumable(config, fake_llm):
     again = run_crawled_experiment(config, "bludit", models=["fake-model"])
     assert len(again) == 0  # everything already stored → skipped
     assert len(fake_llm.calls) == 2
+
+
+class FailingLLM:
+    def generate(self, system, user):
+        raise RuntimeError("Your credit balance is too low to access the Anthropic API.")
+
+
+def test_llm_error_is_logged_but_not_saved_as_a_result(config, monkeypatch):
+    # An API failure is not an answer: no result row, so a re-run retries it.
+    monkeypatch.setattr(runner_module, "create_client", lambda config, model, run=1: FailingLLM())
+    results = run_crawled_experiment(config, "bludit", models=["fake-model"])
+    assert results == []
+    store = ResultStore(config.output_dir / "results.db")
+    assert store.get_all_results() == []
+    calls = store.get_llm_calls(call_type="generation")
+    assert calls and all("credit balance" in c["raw_response"] for c in calls)
+    store.close()

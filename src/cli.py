@@ -329,7 +329,10 @@ def run(ctx, app, model, treatment, execute, limit, runs, source):
         elif message == "invalid":
             click.echo(f"  {progress} [{t}] {class_name}: " + click.style("invalid assertion", fg="red"))
         elif message.startswith("error:"):
-            click.echo(f"  {progress} [{t}] {class_name}: " + click.style(f"LLM error: {message[6:]}", fg="red"))
+            click.echo(f"  {progress} [{t}] {class_name}: " + click.style(
+                f"LLM error (not saved; re-run to retry): {message[6:]}", fg="red"))
+        elif message.startswith("warning:"):
+            click.echo(click.style(f"\n{message[8:]}", fg="yellow"))
         elif message.startswith("sim="):
             sim = float(message[4:])
             color = "green" if sim >= 0.8 else "yellow" if sim >= 0.5 else "red"
