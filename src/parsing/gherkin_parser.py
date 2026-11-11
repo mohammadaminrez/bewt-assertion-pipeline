@@ -8,8 +8,31 @@ from pathlib import Path
 from ..models import GherkinScenario
 
 
+# A Then/And step that describes something the user does, not something to
+# check. BEWT writes the teardown after the last check this way, e.g.
+#   Given the previous assertion passed
+#   Then the user clicks on the "A" icon ...
+#   And clicks the "Logout" link
+# (all of Kanboard, most of Claroline). "clciks" is a typo in Joomla's specs.
+_ACTION_STEP = re.compile(
+    r'^(the user\s+)?(clicks|clciks|enters|selects|confirms|types|checks|unchecks|'
+    r'goes|navigates|opens|presses|scrolls|logs)\b',
+    re.IGNORECASE,
+)
+
+
+def _is_assertion_step(text: str) -> bool:
+    return not _ACTION_STEP.match(text)
+
+
 def parse_feature_file(file_path: Path) -> list[GherkinScenario]:
-    """Parse a .feature file and extract scenarios with their Then-clauses."""
+    """Parse a .feature file and extract scenarios with their Then-clauses.
+
+    Steps are read by keyword: ``And``/``But`` continue the previous
+    keyword, so an ``And`` under a ``When`` is an action even after an
+    earlier ``Then``. Then-steps that describe a user action (the logout
+    teardown BEWT appends after the last check) are not assertions.
+    """
     text = file_path.read_text()
     scenarios = []
 
@@ -17,12 +40,14 @@ def parse_feature_file(file_path: Path) -> list[GherkinScenario]:
     # Gherkin files in BEWT may or may not have explicit "Scenario:" prefix
     current_scenario_name = file_path.stem
     then_clauses = []
+    keyword = None  # the step keyword an And/But continues
 
     for line in text.split('\n'):
         stripped = line.strip()
+        lower = stripped.lower()
 
         # Detect scenario name
-        if stripped.lower().startswith('scenario:'):
+        if lower.startswith('scenario:'):
             # Save previous scenario if it has Then clauses
             if then_clauses:
                 scenarios.append(GherkinScenario(
@@ -32,18 +57,25 @@ def parse_feature_file(file_path: Path) -> list[GherkinScenario]:
                 ))
                 then_clauses = []
             current_scenario_name = stripped.split(':', 1)[1].strip()
+            keyword = None
 
-        elif stripped.lower().startswith('feature:'):
+        elif lower.startswith('feature:'):
             if not current_scenario_name or current_scenario_name == file_path.stem:
                 current_scenario_name = stripped.split(':', 1)[1].strip()
 
-        # Capture Then and And clauses after Then
-        elif stripped.lower().startswith('then '):
-            then_clauses.append(stripped[5:].strip())
+        elif lower.startswith(('given ', 'when ')):
+            keyword = lower.split(' ', 1)[0]
 
-        elif stripped.lower().startswith('and ') and then_clauses:
-            # "And" after a "Then" is also part of assertions
-            then_clauses.append(stripped[4:].strip())
+        elif lower.startswith('then '):
+            keyword = 'then'
+            step = stripped[5:].strip()
+            if _is_assertion_step(step):
+                then_clauses.append(step)
+
+        elif lower.startswith(('and ', 'but ')) and keyword == 'then':
+            step = stripped.split(' ', 1)[1].strip()
+            if _is_assertion_step(step):
+                then_clauses.append(step)
 
     # Save last scenario
     if then_clauses:
