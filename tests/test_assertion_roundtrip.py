@@ -94,12 +94,39 @@ def test_missing_gherkin_gives_no_comment():
     assert generate_variant_b(record, {}) == record.stripped_source
 
 
-def test_gherkin_comment_goes_above_first_placeholder_with_its_indent():
+def test_whole_feature_file_goes_above_test_annotation_with_its_indent():
     record = _record(SPLIT_TEST, "AddAsDraftTest")
-    gmap = {"addasdrafttest": GherkinScenario("f", "s", ['"Draft Content" is shown in DRAFT'])}
+    feature = ('Feature: Add a new draft\n'
+               '\tGiven the user is on the login page\n'
+               '\t\tWhen the user clicks the "Save as draft" button\n'
+               '\tThen "Draft Content" is shown in DRAFT\n\n\n')
+    gmap = {"addasdrafttest": GherkinScenario("f", "s", ['"Draft Content" is shown in DRAFT'], text=feature)}
     lines = generate_variant_b(record, gmap).split("\n")
-    i = lines.index(f"\t\t{PLACEHOLDER} (1)")
-    assert lines[i - 1] == '\t\t// Assert that "Draft Content" is shown in DRAFT'
+    i = next(n for n, l in enumerate(lines) if l.strip().startswith("@Test"))
+    indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+    assert lines[i - 5:i] == [
+        indent + "// Specification (Gherkin):",
+        indent + "// Feature: Add a new draft",
+        indent + "//   Given the user is on the login page",
+        indent + '//     When the user clicks the "Save as draft" button',
+        indent + '//   Then "Draft Content" is shown in DRAFT',
+    ]
+    # the placeholders themselves are unchanged
+    assert generate_variant_b(record, gmap).count(PLACEHOLDER) == record.stripped_source.count(PLACEHOLDER)
+
+
+def test_specification_keeps_teardown_steps_word_for_word():
+    feature = ('Then "New Category 2" is shown in the table\n\n'
+               '\tGiven the previous assertion passed\n'
+               '\tThen the user clicks on the "A" icon\n')
+    comment = GherkinScenario("f", "s", [], text=feature).specification_comment
+    assert comment.split("\n") == [
+        "// Specification (Gherkin):",
+        '// Then "New Category 2" is shown in the table',
+        "//",
+        "//   Given the previous assertion passed",
+        '//   Then the user clicks on the "A" icon',
+    ]
 
 
 def test_reply_code_is_kept_as_written():

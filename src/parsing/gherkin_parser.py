@@ -54,6 +54,7 @@ def parse_feature_file(file_path: Path) -> list[GherkinScenario]:
                     feature_file=str(file_path),
                     scenario_name=current_scenario_name,
                     then_clauses=then_clauses,
+                    text=text,
                 ))
                 then_clauses = []
             current_scenario_name = stripped.split(':', 1)[1].strip()
@@ -77,12 +78,14 @@ def parse_feature_file(file_path: Path) -> list[GherkinScenario]:
             if _is_assertion_step(step):
                 then_clauses.append(step)
 
-    # Save last scenario
-    if then_clauses:
+    # Save last scenario; a file is kept even without Then-clauses, since
+    # treatment B shows its whole text.
+    if then_clauses or (not scenarios and text.strip()):
         scenarios.append(GherkinScenario(
             feature_file=str(file_path),
             scenario_name=current_scenario_name,
             then_clauses=then_clauses,
+            text=text,
         ))
 
     return scenarios
@@ -117,10 +120,30 @@ def _normalize_name(name: str) -> str:
     return name.lower().replace('_', '').replace('-', '')
 
 
+def _core_name(normalized: str, app: str | None) -> str:
+    """Drop what BEWT adds to some names but not others: the app name in
+    front (Claroline's 'ClarolineAddCourseTest' vs 'AddCourseTest.feature')
+    and a trailing 'test' (MantisBT's 'AddCategoryTest' vs 'AddCategory.feature')."""
+    if app and normalized.startswith(app.lower()) and len(normalized) > len(app):
+        normalized = normalized[len(app):]
+    if normalized.endswith("test") and len(normalized) > 4:
+        normalized = normalized[:-4]
+    return normalized
+
+
 def match_gherkin_to_test(
     test_class_name: str,
     gherkin_map: dict[str, GherkinScenario],
+    app: str | None = None,
 ) -> GherkinScenario | None:
-    """Find the Gherkin scenario matching a test class name."""
+    """Find the Gherkin scenario matching a test class name.
+
+    Exact (normalized) names win; otherwise names are compared without the
+    app prefix and a trailing 'test'. An ambiguous match returns None.
+    """
     normalized = _normalize_name(test_class_name)
-    return gherkin_map.get(normalized)
+    if normalized in gherkin_map:
+        return gherkin_map[normalized]
+    core = _core_name(normalized, app)
+    matches = [s for key, s in gherkin_map.items() if _core_name(key, app) == core]
+    return matches[0] if len(matches) == 1 else None

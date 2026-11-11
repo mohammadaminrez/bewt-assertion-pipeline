@@ -55,3 +55,18 @@ def test_single_then_with_and_checks_is_unchanged(tmp_path):
         '"Italiano (Italia)" is shown as selected value in the "Language" dropdown select',
         '"English" is not shown on the page',
     ]
+
+
+def test_spec_names_match_tests_with_app_prefix_or_test_suffix():
+    from src.models import GherkinScenario
+    from src.parsing.gherkin_parser import match_gherkin_to_test
+    gmap = {"addcategory": GherkinScenario("AddCategory.feature", "s"),
+            "addcoursetest": GherkinScenario("AddCourseTest.feature", "s"),
+            "addasdrafttest": GherkinScenario("AddAsDraftTest.feature", "s")}
+    # MantisBT: test has "Test", spec does not
+    assert match_gherkin_to_test("AddCategoryTest", gmap, "mantisbt").feature_file == "AddCategory.feature"
+    # Claroline: test has the app name in front
+    assert match_gherkin_to_test("ClarolineAddCourseTest", gmap, "claroline").feature_file == "AddCourseTest.feature"
+    # exact names still match; unknown names do not
+    assert match_gherkin_to_test("AddAsDraftTest", gmap, "bludit").feature_file == "AddAsDraftTest.feature"
+    assert match_gherkin_to_test("DeleteUserTest", gmap, "bludit") is None

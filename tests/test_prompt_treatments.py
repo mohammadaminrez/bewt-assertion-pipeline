@@ -41,7 +41,7 @@ def test_prompt_only_describes_included_sources():
         strings_source=None,
         page_object_sources=None,
     )
-    assert "Descriptive comments have been added" not in user
+    assert "specification (its Gherkin scenario)" not in user
     assert "HTML page content at the assertion point" in user
     assert "Project constants" not in user
     assert "Page Object classes" not in user
@@ -50,13 +50,13 @@ def test_prompt_only_describes_included_sources():
 def test_prompt_includes_all_sources_for_full_condition():
     system, user = build_assertion_prompt(
         _record(),
-        variant_source="// Assert that ...\n// TODO",
+        variant_source="// Specification (Gherkin):\n// TODO",
         include_comments=True,
         html_content="<html></html>",
         strings_source="public static final String FOO = \"bar\";",
         page_object_sources={"EditProjectPage": "class EditProjectPage {}"},
     )
-    assert "Descriptive comments have been added" in user
+    assert "specification (its Gherkin scenario)" in user
     assert "HTML page content at the assertion point" in user
     assert "Project constants (Strings.java)" in user
     assert "EditProjectPage.java" in user

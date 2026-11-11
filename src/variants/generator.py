@@ -17,35 +17,37 @@ def gherkin_comment(
     record: TestRecord,
     gherkin_map: dict[str, GherkinScenario],
 ) -> str | None:
-    """The `// Assert that ...` comment from the test's Gherkin Then-clauses.
+    """The test's whole Gherkin feature file as a `//` comment block.
 
     Returns None when the benchmark has no specification for the test. There
     is deliberately no fallback: deriving a comment from the gold assertion
     would hand the model the answer.
     """
-    scenario = match_gherkin_to_test(record.class_name, gherkin_map)
-    if scenario is None or not scenario.then_clauses:
+    scenario = match_gherkin_to_test(record.class_name, gherkin_map, record.app)
+    if scenario is None or not scenario.text.strip():
         return None
-    return scenario.descriptive_comment
+    return scenario.specification_comment
 
 
 def generate_variant_b(
     record: TestRecord,
     gherkin_map: dict[str, GherkinScenario],
 ) -> str:
-    """Variant B: stripped test code with the Gherkin comment above the first
-    placeholder (unchanged from A when the test has no specification)."""
+    """Variant B: stripped test code with the specification comment above the
+    test method's @Test annotation (above the first placeholder if there is
+    none); unchanged from A when the test has no specification."""
     source = record.stripped_source
     comment = gherkin_comment(record, gherkin_map)
     if comment is None:
         return source
 
     lines = source.split("\n")
-    for i, line in enumerate(lines):
-        if PLACEHOLDER in line:
-            indent = line[:len(line) - len(line.lstrip())]
-            lines[i:i] = [indent + c for c in comment.split("\n")]
-            break
+    anchor = next((i for i, l in enumerate(lines) if l.strip().startswith("@Test")), None)
+    if anchor is None:
+        anchor = next(i for i, l in enumerate(lines) if PLACEHOLDER in l)
+    line = lines[anchor]
+    indent = line[:len(line) - len(line.lstrip())]
+    lines[anchor:anchor] = [indent + c for c in comment.split("\n")]
     return "\n".join(lines)
 
 

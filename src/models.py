@@ -111,18 +111,31 @@ class TestRecord:
 
 @dataclass
 class GherkinScenario:
-    """A parsed Gherkin scenario with its Then-clause."""
+    """A parsed Gherkin scenario: its Then-clauses and the whole feature text."""
     feature_file: str
     scenario_name: str
     then_clauses: list[str] = field(default_factory=list)
+    # The feature file exactly as written; treatment B shows all of it.
+    text: str = ""
 
     @property
-    def descriptive_comment(self) -> str:
-        """Convert Then-clauses to a descriptive comment for variant B."""
+    def specification_comment(self) -> str:
+        """The whole feature file as a Java line comment for variant B.
+
+        Wording is unchanged; leading tabs become two spaces each, trailing
+        whitespace and surrounding blank lines are dropped, and runs of blank
+        lines become a single empty comment line.
+        """
         lines = []
-        for clause in self.then_clauses:
-            lines.append(f"// Assert that {clause}")
-        return "\n".join(lines)
+        for raw in self.text.split("\n"):
+            stripped = raw.lstrip("\t")
+            line = ("  " * (len(raw) - len(stripped)) + stripped).rstrip()
+            if line or (lines and lines[-1]):
+                lines.append(line)
+        while lines and not lines[-1]:
+            lines.pop()
+        return "\n".join(["// Specification (Gherkin):"]
+                         + [f"// {line}" if line else "//" for line in lines])
 
 
 @dataclass
