@@ -593,6 +593,10 @@ def report(ctx):
     if bewt_results:
         generate_full_report(bewt_results, config.output_dir / "reports")
         click.echo(f"Benchmark reports written to {config.output_dir / 'reports'}")
+        from .evaluation.figures import write_figures   # matplotlib: only loaded here
+        figures = write_figures(config.output_dir, log=click.echo)
+        if figures:
+            click.echo(f"Figures written to {figures}")
 
     if crawled_results:
         crawled_apps = {r.test_record.app for r in crawled_results}
