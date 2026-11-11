@@ -92,25 +92,28 @@ apps:
       password: "admin"
 
   mantisbt:
+    # 1.2.0, not 2.25.4: BEWT's MantisBT Gherkin specs were written for 1.2.0
+    # (same file names as its tests; under 2.25.4, 4 specs name messages the
+    # app no longer shows, e.g. 'A necessary field "" was empty').
     versions:
-      - "2.25.4"
-    base_url: "http://localhost:8989"
+      - "1.2.0"
+    base_url: "http://localhost:3000/mantisbt"
     variant: "baseline"
     docker_compose: null
-    # BEWT's docker-compose.yml (app + MariaDB). The benchmark's Installer,
-    # kept outside TestSuite, runs the install wizard and sets the admin
-    # password. State = the generated config + the database.
-    setup_class: "Installer"
+    # BEWT's image: Apache + MySQL 5.5 in one container (amd64 only), already
+    # installed, started by its run-services-docker.sh. All state is in the
+    # database (no state_dir: the site files never change).
     docker:
-      compose_file: "docker-compose.yml"
-      container: "mantisbt-mantisbt-1"
-      state_dir: "/var/www/html/config"
-      mysql_container: "mantisbt-mysql-1"
-      mysql_password: "e2eW3Bt3s71nGB3nchM4rK"
+      image: "dockercontainervm/mantisbt:1.2.0"
+      platform: "linux/amd64"
+      container: "mantisbt"
+      ports: "3000:80"
+      command: "cd /home && exec ./run-services-docker.sh"
+      mysql_password: "root"
       mysql_database: "bugtracker"
     credentials:
       username: "administrator"
-      password: "root"
+      password: "e2eW3Bt3s71nGB3nchM4rK"
 
   mediawiki:
     versions:

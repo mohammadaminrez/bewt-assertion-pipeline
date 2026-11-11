@@ -162,13 +162,18 @@ def snapshot_state(config: Config, app: str, dest: Path) -> None:
     """Save the state directory as `dest` (.tar) and, for apps with a MySQL
     database, a dump of it next to it (.sql)."""
     docker = _docker(config, app)
-    state = Path(docker["state_dir"])
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with dest.open("wb") as out:
-        subprocess.run(
-            ["docker", "exec", docker["container"], "tar", "-C", str(state.parent), "-cf", "-", state.name],
-            stdout=out, check=True,
-        )
+    if not docker.get("state_dir"):
+        # All state is in the database (MantisBT 1.2.0): the .tar stays empty
+        # so snapshots keep one naming scheme.
+        dest.write_bytes(b"")
+    else:
+        state = Path(docker["state_dir"])
+        with dest.open("wb") as out:
+            subprocess.run(
+                ["docker", "exec", docker["container"], "tar", "-C", str(state.parent), "-cf", "-", state.name],
+                stdout=out, check=True,
+            )
     if docker.get("mysql_database"):
         with dest.with_suffix(".sql").open("wb") as out:
             subprocess.run(
@@ -180,16 +185,17 @@ def snapshot_state(config: Config, app: str, dest: Path) -> None:
 
 def restore_state(config: Config, app: str, snapshot: Path) -> None:
     docker = _docker(config, app)
-    state = Path(docker["state_dir"])
-    # Empty the directory rather than remove it: it may be a volume mount
-    # point (Kanboard), which cannot be removed.
-    subprocess.run(["docker", "exec", docker["container"], "sh", "-c",
-                    'rm -rf "$1"/* "$1"/.[!.]* "$1"/..?*', "sh", str(state)], check=True)
-    with snapshot.open("rb") as src:
-        subprocess.run(
-            ["docker", "exec", "-i", docker["container"], "tar", "-C", str(state.parent), "-xf", "-"],
-            stdin=src, check=True,
-        )
+    if docker.get("state_dir"):
+        state = Path(docker["state_dir"])
+        # Empty the directory rather than remove it: it may be a volume mount
+        # point (Kanboard), which cannot be removed.
+        subprocess.run(["docker", "exec", docker["container"], "sh", "-c",
+                        'rm -rf "$1"/* "$1"/.[!.]* "$1"/..?*', "sh", str(state)], check=True)
+        with snapshot.open("rb") as src:
+            subprocess.run(
+                ["docker", "exec", "-i", docker["container"], "tar", "-C", str(state.parent), "-xf", "-"],
+                stdin=src, check=True,
+            )
     database = docker.get("mysql_database")
     if database:
         subprocess.run(
