@@ -23,7 +23,12 @@ bewt-pipeline report
 ```
 
 **Models:** OpenAI, Anthropic and Gemini. Choose one with `--model`
-(`gpt-4o-mini`, `claude-haiku`, `gemini-flash`, …).
+(`gpt-4o-mini`, `claude-haiku`, `gemini-flash`, …). For example, with
+`ANTHROPIC_API_KEY` set in `.env`:
+
+```bash
+bewt-pipeline run --app bludit --model claude-haiku --execute
+```
 
 ## Apps and systems
 
