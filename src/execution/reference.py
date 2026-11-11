@@ -141,6 +141,11 @@ def reset_app(config: Config, app: str) -> None:
     _wait_for_http(config.apps[app]["base_url"])
     if docker.get("mysql_database"):
         _wait_for_mysql(docker)
+        if docker.get("setup_sql"):
+            # Bring the image's data in line with what the suite expects
+            # (MantisBT 1.2.0: the admin password the tests log in with).
+            subprocess.run(_mysql(docker, "mysql", docker["mysql_database"], "-e", docker["setup_sql"]),
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True)
 
 
 def ensure_app_running(config: Config, app: str) -> None:

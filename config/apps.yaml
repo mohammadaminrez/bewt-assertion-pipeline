@@ -111,6 +111,9 @@ apps:
       command: "cd /home && exec ./run-services-docker.sh"
       mysql_password: "root"
       mysql_database: "bugtracker"
+      # The image's administrator password is "root", but BEWT's 1.2.0
+      # BaseTest logs in with the one below (MantisBT 1.2 stores MD5).
+      setup_sql: "UPDATE mantis_user_table SET password = MD5('e2eW3Bt3s71nGB3nchM4rK') WHERE username = 'administrator'"
     credentials:
       username: "administrator"
       password: "e2eW3Bt3s71nGB3nchM4rK"
