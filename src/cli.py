@@ -217,15 +217,18 @@ def reference_run(ctx, app, source):
 
 @main.command(name="rescore")
 @click.option("--app", "-a", required=True, help="App whose stored answers to re-execute")
+@click.option("--reextract", is_flag=True, default=False,
+              help="Re-extract each answer from the stored reply with the current parser and "
+                   "re-execute only the answers whose code changed")
 @click.pass_context
-def rescore(ctx, app):
+def rescore(ctx, app, reextract):
     """Re-execute and re-classify every stored answer with the current harness
-    (no LLM calls; the model's answers are not changed)."""
+    (no LLM calls; the model's replies are not changed)."""
     from .runner import rescore_experiment
 
     config = ctx.obj["config"]
     try:
-        summary = rescore_experiment(config, app, on_progress=click.echo)
+        summary = rescore_experiment(config, app, on_progress=click.echo, reextract=reextract)
     except ReferenceRunError as e:
         raise click.ClickException(str(e))
     click.echo(f"\nRe-executed {summary['rescored']} answers; {len(summary['changed'])} outcome(s) changed:")

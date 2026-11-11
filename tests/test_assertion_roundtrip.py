@@ -187,3 +187,18 @@ def test_existing_or_wildcard_imports_are_respected():
     src = ("package tests;\n\nimport org.openqa.selenium.*;\nimport static org.junit.Assert.*;\n\n"
            "class X { void m() { assertTrue(d.findElement(By.id(\"a\")) != null); } }")
     assert ensure_assert_imports(src) == src
+
+
+def test_quoted_html_block_before_the_answer_is_not_the_answer():
+    # Claude Haiku explains, quotes the page in an html block, then answers.
+    reply = ("From the HTML, the position field is:\n```html\n"
+             '<input type="text" value="30" id="jsposition">\n```\n\n'
+             "NewContentPage has getPosition():\n\n```java\n"
+             'assertEquals("30", contentPage.getPosition());\n```')
+    assert extract_assertion_from_response(reply) == 'assertEquals("30", contentPage.getPosition());'
+
+
+def test_quoted_page_object_block_is_skipped_for_the_asserting_block():
+    reply = ("```java\npublic String getPosition() {\n    return position.getAttribute(\"value\");\n}\n```\n"
+             "So:\n```java\nassertEquals(\"30\", page.getPosition());\n```")
+    assert extract_assertion_from_response(reply) == 'assertEquals("30", page.getPosition());'

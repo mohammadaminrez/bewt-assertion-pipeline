@@ -183,12 +183,17 @@ def _judge(config: Config, app_name: str, record, variant_source: str, generated
     }
 
 
-def rescore_experiment(config: Config, app: str, on_progress: Callable[[str], None] = print) -> dict:
+def rescore_experiment(config: Config, app: str, on_progress: Callable[[str], None] = print,
+                       reextract: bool = False) -> dict:
     """Re-execute every stored answer with the current harness (no LLM calls).
 
     The answers stay exactly as the model wrote them; only compiling,
     running and classifying is redone. Manual review labels are cleared for
     answers whose outcome changed, since they were given for another verdict.
+
+    With ``reextract``, each answer is first extracted again from the stored
+    reply with the current parser, and only answers whose code changed are
+    re-executed (e.g. after fixing how multi-block replies are read).
     """
     load_reference(config, app)
     records, _, _ = _load_app_records(config, app, None)
@@ -197,15 +202,44 @@ def rescore_experiment(config: Config, app: str, on_progress: Callable[[str], No
     store = ResultStore(config.output_dir / "results.db")
     rows = [r for r in store.get_all_results() if r["app"] == app and r["source"] == "bewt"]
     changed = []
+    executed = 0
     for i, row in enumerate(rows, 1):
         record = by_class[row["class_name"]]
         source, _, _ = _variant_source(record, row["treatment"], gherkin_map)
         generated = row["generated_assertion"] or ""
-        if not validate_assertion(generated):
-            continue
-        verdict = _judge(config, app, record, source, generated, row["model"], row["treatment"])
         kept_notes = [n for n in (row["notes"] or "").split(" | ")
                       if n.startswith(("no Gherkin spec", "answer contains"))]
+        if reextract:
+            fresh = extract_assertion_from_response(row["raw_response"] or "")
+            if fresh == generated:
+                continue
+            generated = fresh
+            kept_notes = [n for n in kept_notes if not n.startswith("answer contains")]
+            if validate_assertion(generated) and has_extra_statements(generated):
+                kept_notes.append("answer contains non-assertion statements")
+            store.conn.execute(
+                "UPDATE experiments SET generated_assertion=?, exact_match=?, semantic_similarity=? WHERE id=?",
+                (generated, int(check_exact_match(generated, record.assertions)),
+                 compute_semantic_similarity(generated, record.assertions), row["id"]),
+            )
+            if not validate_assertion(generated):
+                new = (0, 0, ErrorCategory.NOT_EXECUTABLE.value)
+                old = (row["compiles"], row["passes"], row["error_category"])
+                if new != old:
+                    changed.append({"class": row["class_name"], "treatment": row["treatment"],
+                                    "run": row["run"], "old": old, "new": new})
+                store.conn.execute(
+                    "UPDATE experiments SET compiles=0, passes=0, failure_type='', error_category=?, notes=?"
+                    + (", manual_error_category=NULL, manual_notes=NULL" if new != old else "")
+                    + " WHERE id=?",
+                    (new[2], " | ".join(kept_notes + ["answer contains no assertion call"]), row["id"]),
+                )
+                store.conn.commit()
+                continue
+        if not validate_assertion(generated):
+            continue
+        executed += 1
+        verdict = _judge(config, app, record, source, generated, row["model"], row["treatment"])
         new = (int(verdict["compiles"]), int(verdict["passes"]), verdict["category"].value)
         old = (row["compiles"], row["passes"], row["error_category"])
         if new != old:
@@ -221,7 +255,7 @@ def rescore_experiment(config: Config, app: str, on_progress: Callable[[str], No
         on_progress(f"  [{i}/{len(rows)}] {row['class_name']} [{row['treatment']}] run{row['run']}: "
                     f"{verdict['category'].value}" + ("   (CHANGED)" if new != old else ""))
     store.close()
-    return {"rescored": len(rows), "changed": changed}
+    return {"rescored": executed, "changed": changed}
 
 
 def run_experiment(

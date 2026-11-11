@@ -10,8 +10,28 @@ compiler and the test decide whether the answer works.
 
 import re
 
-_FENCE = re.compile(r"```[A-Za-z]*[ \t]*\n(.*?)```", re.DOTALL)
+_FENCE = re.compile(r"```([A-Za-z]*)[ \t]*\n(.*?)```", re.DOTALL)
 _ASSERT_CALL = re.compile(r"\b(?:Assert\.)?assert[A-Z]\w*\s*\(")
+
+
+def _answer_blocks(response: str) -> list[str]:
+    """The fenced blocks that hold the answer.
+
+    Some models explain first and quote the page or a page object in their
+    own blocks (```html ...```, ```java class ...```) before the answer
+    block. Those quotes are not the answer: prefer Java (or untagged) blocks
+    with an assertion call, then any block with one, then all blocks.
+    """
+    blocks = [(lang.lower(), body) for lang, body in _FENCE.findall(response)]
+    javaish = [body for lang, body in blocks if lang in ("java", "")]
+    for candidates in (
+        [b for b in javaish if _ASSERT_CALL.search(b)],
+        [body for _, body in blocks if _ASSERT_CALL.search(body)],
+        [body for _, body in blocks],
+    ):
+        if candidates:
+            return candidates
+    return []
 
 
 def _is_prose(line: str) -> bool:
@@ -27,7 +47,7 @@ def extract_assertion_from_response(response: str) -> str:
     without prose lines and with common indentation removed."""
     if not response:
         return ""
-    blocks = _FENCE.findall(response)
+    blocks = _answer_blocks(response)
     code = "\n".join(block.strip("\n") for block in blocks) if blocks else response
     lines = [line.rstrip() for line in code.strip("\n").split("\n") if not _is_prose(line)]
     while lines and not lines[0].strip():
